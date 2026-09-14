@@ -32,6 +32,7 @@ from ivb.config import (DATA, GRID_BIN_WIDTH_MULTS,                # noqa: E402
 from ivb.exits import (CLOSE_INVALIDATION, HARD_STOP, TIME_STOP,   # noqa: E402
                        TP1 as EXIT_TP1, format_frequency, frequency, resolve)
 from ivb.partitions import build_partitions, select                # noqa: E402
+from ivb.quality import degraded_dates, load_degraded             # noqa: E402
 from ivb.profile import (BIN_WIDTH_MULT, DEFAULT_VA_PCT, METHOD_LABELS,  # noqa: E402
                          METHODS, bin_width, build_profile, method_spread,
                          reload_zone)
@@ -273,9 +274,18 @@ def b9_sensitivity(sessions, cfg, *, bin_mult=BIN_WIDTH_MULT) -> dict:
     d_risk, d_poc, d_vah, d_val, risk_hard = [], [], [], [], []
     widths, spans = [], []
     n_breakout = 0
+    n_degraded = 0
     broke_dates = set()
 
+    # sec 0.2.4: the gate is measured on the IB PROFILE, and a degraded day can be
+    # missing the messages that define it. Excluded here as well as in the backtest,
+    # or the gate would be decided partly on windows that are not real.
+    degraded = degraded_dates()
+
     for s in sessions:
+        if s.session_date in degraded:
+            n_degraded += 1
+            continue
         bo = find_breakout(s, cfg)
         if bo is None or bo["ambiguous_breakout"]:
             continue
@@ -340,6 +350,7 @@ def b9_sensitivity(sessions, cfg, *, bin_mult=BIN_WIDTH_MULT) -> dict:
         "d_POC p50 > 4 ticks": bool(q(d_poc)["p50"] > 4.0),
     }
     return {"n_breakout": n_breakout, "broke_dates": broke_dates,
+            "n_degraded_excluded": n_degraded,
             "bin_mult": bin_mult,
             "bin_width_ticks": q(widths), "bars_per_bin": q(spans),
             "d_risk": q(d_risk), "d_POC": q(d_poc),
@@ -786,6 +797,10 @@ def main() -> int:
         # session can break its IB and still never become a trade. That difference is
         # now a bar, and the filter responsible is named.
         s_ib_broke = b9["n_breakout"]
+        # sec 0.2.4 quality stage, shown as its own line so the count is visible and
+        # is never confused with a strategy filter. It is the only stage removed for
+        # a reason that has nothing to do with the market.
+        n_degraded = b9.get("n_degraded_excluded", 0)
         lost = s_ib_broke - s_break
         broke = b9["broke_dates"]
         by_filter = (df[df["session_date"].isin(broke) & (df["traded"] == False)]  # noqa: E712
@@ -796,6 +811,13 @@ def main() -> int:
 
         brk_pct = 100.0 * s_break / s_all if s_all else float("nan")
         notes3 = [
+            "sec 0.2.4 VENDOR QUALITY: {:,} session(s) excluded BEFORE any stage below, "
+            "because".format(n_degraded),
+            "Databento does not mark the day `available`. See data/raw/degraded_days.csv.",
+            "Excluded, never repaired: a degraded day can be missing messages, which",
+            "narrows the observed IB and therefore moves ib_range_atr, the profile, and",
+            "risk_R -- with every downstream number still looking self-consistent.",
+            "",
             "S_ib_broke is the PHYSICAL event (find_breakout fires, unambiguous), with the",
             "sec (f) no-trade filters IGNORED. It is the denominator sec b.9 uses.",
             "S_breakout is S_ib_broke minus the sessions the no-trade filters removed, and",

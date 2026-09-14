@@ -2,13 +2,17 @@
   "convention": "open_stamped",
   "sessions_tested": 20,
   "spike_at_0930": 17,
-  "spike_at_0931": 1,
+  "spike_at_0931": 2,
   "spike_at_0929": 0,
-  "bars_1600_with_volume": 0,
+  "last_bar_before_halt_1659": 2124,
+  "last_bar_before_halt_1700": 30,
+  "halt_sessions_tested": 2379,
   "median_rth_bar_count": 390.0,
-  "sessions_with_390_bars": 20,
+  "sessions_with_390_bars": 18,
   "confident": true,
   "notes": [
-    "Open volume spike on the 09:30 bar. IVB-SPEC sec 0 stamping is CORRECT."
+    "Open volume spike on the 09:30 bar. IVB-SPEC sec 0 stamping is CORRECT.",
+    "HALT BOUNDARY: last pre-halt bar is 16:59 on 2,124 sessions and 17:00 on 30 (of 2,379 weeknights). 16:59 share = 98.6%.",
+    "16:59 dominates -> OPEN-STAMPED. Agrees with check 1."
   ]
 }

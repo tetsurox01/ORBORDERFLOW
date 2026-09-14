@@ -3,6 +3,12 @@ __pycache__/
 .venv/
 venv/
 .ipynb_checkpoints/
+*.bak
+
+# Real (paid/licensed) market data -- keep out of GitHub. Synthetic test
+# data (data/raw/synthetic*.parquet) is not affected by this rule.
+data/raw/nq_ohlcv*.parquet
+data/raw/ticks_*.parquet
 
 # Secrets. THE REPO IS PUBLIC -- a committed key is a published key, and git
 # history keeps it after deletion, so the only fix is rotation at the vendor.

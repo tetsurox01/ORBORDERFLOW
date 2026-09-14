@@ -38,7 +38,9 @@ def main() -> int:
     print(f"open spike at 09:29   : {v.spike_at_0929}")
     print(f"open spike at 09:30   : {v.spike_at_0930}   <- expected for open-stamped")
     print(f"open spike at 09:31   : {v.spike_at_0931}   <- would mean CLOSE-stamped")
-    print(f"bars at 16:00 w/ vol  : {v.bars_1600_with_volume}")
+    print(f"halt check weeknights : {v.halt_sessions_tested:,}")
+    print(f"last pre-halt = 16:59 : {v.last_bar_before_halt_1659:,}   <- expected for open-stamped")
+    print(f"last pre-halt = 17:00 : {v.last_bar_before_halt_1700:,}   <- would mean CLOSE-stamped")
     print(f"median RTH bar count  : {v.median_rth_bar_count}  (expect 390)")
     print(f"sessions with 390 bars: {v.sessions_with_390_bars}")
     for n in v.notes:

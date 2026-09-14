@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 
 from .config import Config
+from .quality import degraded_dates
 from .sessions import Session, find_breakout, round_tick, stop_level
 
 
@@ -178,6 +179,10 @@ def run_strategy(sessions: list[Session], feats: pd.DataFrame, cfg: Config) -> p
     """
     fmap = feats.set_index("session_date")
     rows = []
+    # sec 0.2.4: days Databento does not mark `available`. Read once, outside the
+    # loop. An empty set (artifact absent) means no session is excluded -- the
+    # funnel then shows a zero row, which is visibly different from "not checked".
+    degraded = degraded_dates()
 
     for s in sessions:
         if cfg.exclude_half_days and s.is_half_day:
@@ -199,6 +204,16 @@ def run_strategy(sessions: list[Session], feats: pd.DataFrame, cfg: Config) -> p
             "covid_flag": _covid(s.session_date),
             "skip_reason": "",
         }
+
+        # ---- vendor data quality, FIRST (sec 0.2.4) ------------------------
+        # Runs ahead of every other filter deliberately. A degraded day can be
+        # missing messages, which narrows the observed IB, which moves ib_range_atr
+        # -- the input to the very next filter. Ordering it after min_ib_range_atr
+        # would let a corrupted window decide its own admissibility.
+        if s.session_date in degraded:
+            base["skip_reason"] = "vendor_degraded"
+            rows.append(base)
+            continue
 
         # ---- no-trade filter, known at IB close, no leakage (sec f) --------
         if np.isfinite(base["ib_range_atr"]) and base["ib_range_atr"] < cfg.min_ib_range_atr:

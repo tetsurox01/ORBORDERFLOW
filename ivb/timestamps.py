@@ -5,8 +5,26 @@ the future into the initial balance and invalidates every result in this project
 
 Three independent checks:
   1. The RTH open volume spike must land on the bar stamped 09:30 (open-stamped).
-  2. There must be no full-volume bar stamped 16:00 (RTH ends at 16:00:00).
+  2. HALT BOUNDARY: the last volume-bearing bar before the CME daily maintenance
+     halt must be 16:59 (open-stamped), not 17:00 (close-stamped).
   3. A full session must contain exactly 390 RTH bars.
+
+CHECK 2 WAS REPLACED. THE OLD ONE WAS VOID. DO NOT REINSTATE IT.
+    The old check 2 asserted "there must be no full-volume bar stamped 16:00,
+    because RTH ends at 16:00:00". That reasoning is wrong for a FUTURES feed.
+    16:00 ET is the equity cash close; NQ on GLBX keeps trading until 16:15 and
+    reopens at 18:00. So a bar stamped 16:00 is full of real volume under BOTH
+    conventions, and the check fired on every correct open-stamped feed. Measured:
+    18/20 sessions tripped it, producing a CONFLICT against check 1 and a false
+    DO-NOT-PROCEED on data that was in fact open-stamped.
+
+    Check 3 cannot rescue it either: 09:30-15:59 and 09:31-16:00 are BOTH 390
+    bars, so the bar count has no discriminating power between the conventions.
+    It only detects missing minutes.
+
+    The replacement uses the DAILY MAINTENANCE HALT (17:00-17:59 ET), where
+    trading genuinely stops -- there is no "but futures keep going" escape. The
+    two conventions give different answers there, which is what a check needs.
 """
 from __future__ import annotations
 
@@ -28,7 +46,9 @@ class TimestampVerdict:
     spike_at_0930: int
     spike_at_0931: int
     spike_at_0929: int
-    bars_1600_with_volume: int
+    last_bar_before_halt_1659: int
+    last_bar_before_halt_1700: int
+    halt_sessions_tested: int
     median_rth_bar_count: float
     sessions_with_390_bars: int
     confident: bool
@@ -67,7 +87,6 @@ def verify(bars: pd.DataFrame, n_sessions: int = 20, seed: int = 20260101) -> Ti
     pick = rng.choice(full, size=min(n_sessions, len(full)), replace=False)
 
     spike_0929 = spike_0930 = spike_0931 = 0
-    bars_1600 = 0
     rth_counts: list[int] = []
     notes: list[str] = []
 
@@ -87,13 +106,26 @@ def verify(bars: pd.DataFrame, n_sessions: int = 20, seed: int = 20260101) -> Ti
         rth = s[s["hm"].between("09:30", "15:59")]
         rth_counts.append(len(rth))
 
-        at1600 = s[s["hm"] == "16:00"]
-        if not at1600.empty and float(at1600["volume"].iloc[0]) > 0:
-            bars_1600 += 1
 
     tested = len(pick)
     median_count = float(np.median(rth_counts)) if rth_counts else float("nan")
     n390 = sum(1 for c in rth_counts if c == 390)
+
+    # ---- CHECK 2: the CME daily maintenance halt, 17:00-17:59 ET -----------
+    # Trading genuinely STOPS here, so unlike 16:00 (equity close, futures still
+    # trading) the boundary is unambiguous:
+    #   open-stamped  -> last volume-bearing bar is 16:59; the 17:00 bar would
+    #                    cover [17:00, 17:01) which is inside the halt -> empty.
+    #   close-stamped -> last volume-bearing bar is 17:00, covering (16:59, 17:00].
+    # Run over ALL Mon-Thu sessions, not the sample: a halt happens every weeknight
+    # and one example proves nothing. Friday is excluded (weekend close, no reopen).
+    vol = b[b["volume"] > 0]
+    wk = vol[vol["ts_et"].dt.dayofweek < 4]
+    band = wk[wk["hm"].between("16:30", "17:59")]
+    last_hm = band.groupby(band["ts_et"].dt.normalize())["hm"].max()
+    halt_n = int(len(last_hm))
+    halt_1659 = int((last_hm == "16:59").sum())
+    halt_1700 = int((last_hm == "17:00").sum())
 
     # ---- decide ----------------------------------------------------------
     convention = "UNKNOWN"
@@ -122,14 +154,33 @@ def verify(bars: pd.DataFrame, n_sessions: int = 20, seed: int = 20260101) -> Ti
             f"09:31={spike_0931} of {tested}). Inconclusive; widen the sample."
         )
 
-    if bars_1600 > 0:
+    # Compared as a RATIO, not against a fixed threshold: the residual sessions are
+    # ones whose last pre-halt print simply landed earlier than 16:59 (thin evening
+    # trade), which is neither evidence for nor against a convention. What matters is
+    # which of the two candidate minutes dominates, and by how much.
+    if halt_n and (halt_1659 + halt_1700) > 0:
+        share = halt_1659 / (halt_1659 + halt_1700)
         notes.append(
-            f"{bars_1600}/{tested} sessions have volume on a bar stamped 16:00. "
-            "That is consistent with CLOSE-stamping and contradicts open-stamping."
+            f"HALT BOUNDARY: last pre-halt bar is 16:59 on {halt_1659:,} sessions and "
+            f"17:00 on {halt_1700:,} (of {halt_n:,} weeknights). "
+            f"16:59 share = {share:.1%}."
         )
-        if convention == "open_stamped":
+        if share >= 0.9:
+            notes.append("16:59 dominates -> OPEN-STAMPED. Agrees with check 1.")
+            if convention == "close_stamped":
+                confident = False
+                notes.append("CONFLICT: check 1 says close-stamped, check 2 says open. Do not proceed.")
+        elif share <= 0.1:
+            notes.append("17:00 dominates -> CLOSE-STAMPED.")
+            if convention == "open_stamped":
+                confident = False
+                notes.append("CONFLICT: check 1 and check 2 disagree. Do not proceed.")
+        else:
             confident = False
-            notes.append("CONFLICT: check 1 and check 2 disagree. Do not proceed.")
+            notes.append("Halt boundary is ambiguous. Do not proceed.")
+    else:
+        confident = False
+        notes.append("Halt boundary check found no usable sessions. Do not proceed.")
 
     if rth_counts and n390 < 0.8 * len(rth_counts):
         notes.append(
@@ -146,7 +197,9 @@ def verify(bars: pd.DataFrame, n_sessions: int = 20, seed: int = 20260101) -> Ti
         spike_at_0930=spike_0930,
         spike_at_0931=spike_0931,
         spike_at_0929=spike_0929,
-        bars_1600_with_volume=bars_1600,
+        last_bar_before_halt_1659=halt_1659,
+        last_bar_before_halt_1700=halt_1700,
+        halt_sessions_tested=halt_n,
         median_rth_bar_count=median_count,
         sessions_with_390_bars=n390,
         confident=confident,

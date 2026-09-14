@@ -58,6 +58,32 @@ The only admissible number for any pull is the one `metadata.get_cost` returns f
 that **exact** dataset, schema, symbology and date window. Both `get_cost` and
 `get_billable_size` are free metadata calls, so there is never a reason to guess.
 
+#### MEASURED ESTIMATES — recorded so they are not re-derived a third time
+
+All from `metadata.get_cost` / `get_billable_size` on this account, `GLBX.MDP3`,
+`NQ.FUT`, `stype_in=parent`. Free metadata calls; no data was bought to obtain them.
+
+| Pull | Window | Cost | Billable | Implied $/GB |
+|---|---|---|---|---|
+| **`ohlcv-1m`** — the Step 1 bar pull, full registered range | 2010-07-01 → 2026-08-31 (~16 yr) | **$23.73** | 0.36 GB | **~$66 / GB** |
+| **`trades`** — the Step 4 tick sample | 2025-01-01 → 2025-06-30 (6 mo) | **$65.66** | 2.518 GB | **~$26 / GB** |
+| **`trades`** — one month, for scaling | 2025-01-01 → 2025-01-31 (1 mo) | **$10.29** | 0.395 GB | **~$26 / GB** |
+
+Two things this table is here to stop being forgotten:
+
+1. **`trades` is CHEAPER per gigabyte than `ohlcv-1m`** — $26 against $66, a factor
+   of 2.5 in the direction nobody predicts. Sixteen years of bars cost about a third
+   of six months of ticks, while being 7× smaller. Both facts are true at once, and
+   neither is derivable from the other. This is the warning above, measured.
+2. **Tick volume is not uniform across months.** Six months costs **6.38×** one
+   month, not 6.00×, so a per-month rate (~$10.94) is an average and not a price.
+   Roll weeks and high-volatility months carry far more messages. Never size a tick
+   window by multiplying a single month.
+
+Re-run `scripts/01b_price_ticks.py` to refresh the tick rows; it is free and has no
+purchase path. The bar row comes from `scripts/01_download.py`, which prints the same
+estimate before it asks for confirmation.
+
 `scripts/01b_price_ticks.py` prices the Step 4 `trades` pull on this basis. It is
 **estimate-only by construction** — it contains no `timeseries` request and no
 `IVB_CONFIRM_SPEND` branch at all, so it cannot spend money even if run wrongly.
@@ -80,12 +106,74 @@ Test: on 20 randomly chosen non-holiday sessions, locate the RTH open volume spi
   If it sits on the bar stamped 09:31         -> CLOSE-stamped, EVERYTHING
                                                  shifts by one minute.
 
-Second check: confirm there is no bar stamped 16:00 carrying a full minute of
-      volume (RTH ends 16:00:00). A close-stamped feed puts the last minute at
-      16:00; an open-stamped feed puts it at 15:59.
+Second check (HALT BOUNDARY): find the last volume-bearing bar before the CME
+      daily maintenance halt, 17:00-17:59 ET, over ALL Mon-Thu sessions.
+      Trading genuinely STOPS in that hour.
+        open-stamped  -> last bar is 16:59  (a 17:00 bar covers [17:00,17:01),
+                                             inside the halt, therefore empty)
+        close-stamped -> last bar is 17:00  (covering (16:59,17:00])
 
 Third check: assert the count of RTH bars per session == 390 for a full session.
+      This detects MISSING MINUTES ONLY. It has NO power to tell the conventions
+      apart -- 09:30-15:59 and 09:31-16:00 are both exactly 390 bars.
 ```
+
+#### THE ORIGINAL SECOND CHECK WAS VOID. DO NOT REINSTATE IT.
+
+The first version of check 2 read: *"confirm there is no bar stamped 16:00 carrying
+a full minute of volume (RTH ends 16:00:00)."* **That reasoning is wrong for a
+futures feed, and it was wrong in the direction that manufactures a false alarm.**
+
+16:00 ET is the **equity cash close**. NQ on GLBX does not stop there — it trades on
+to 16:15, pauses, resumes at 16:30, and runs to the 17:00 halt. So a bar stamped
+16:00 is full of genuine volume under **both** conventions, and the check fires on
+every correct open-stamped feed.
+
+Measured on the real pull: **18 of 20 sessions tripped it**, against check 1's 17 of
+20 saying open-stamped. The script reported `CONFLICT ... Do not proceed` and exited
+1 on data that is, in fact, open-stamped.
+
+Two lessons written down so they are not relearned:
+
+1. **A boundary is only a test if trading actually stops there.** The equity close,
+   the 16:15 pause and an early-close half day all share the same defect: futures
+   keep trading, so a volume-bearing bar at the boundary is ambiguous. The 17:00-17:59
+   maintenance halt is the only clean daily boundary, because the venue is shut.
+2. **Check 3 never had discriminating power and must not be cited as if it did.**
+   Both candidate windows contain 390 minutes. It detects missing bars. Nothing else.
+
+#### Result on the real pull — 2010-07-01 → 2026-08-31
+
+Three independent lines of evidence, all agreeing:
+
+| Test | Result | Reads as |
+|---|---|---|
+| **1. Open spike** | 09:30 on **17/20** sessions; 09:31 on 2; 09:29 on 0 | open-stamped |
+| **2. Halt boundary** | last pre-halt bar is **16:59 on 2,124** weeknights vs **17:00 on 30** — a **98.6%** share, over 2,379 weeknights | open-stamped |
+| **3. Bar count** | median **390.0**, 18/20 sessions exactly 390 | no missing minutes (no stamping signal) |
+| **A2. Tick ground truth** | hand-built bars from the `trades` schema, NQH5 2025-03-04: **1,070/1,080 minute bars match Databento exactly (99.07%)** when built LEFT-CLOSED `[m, m+1)` | open-stamped |
+
+The **A2 tick reconstruction is the decisive one** — it needs no market-structure
+reasoning at all. 678,028 trades were aggregated into left-closed 1-minute bars and
+compared to the vendor's:
+
+```
+my  [09:30, +1m)   O 20342.50  H 20348.50  L 20308.00  C 20333.75  V 5,276
+DB  stamped 09:30  O 20342.50  H 20348.50  L 20308.00  C 20333.75  V 5,276   EXACT
+DB  stamped 09:31  O 20332.00  H 20364.25  L 20297.75  C 20301.00  V 4,772   differs
+```
+
+The 10 non-matching bars of 1,080 occur in **adjacent pairs** (09:24/09:25,
+12:36/12:37, 13:14/13:15, 15:04/15:05, 15:59/16:00) with highs and lows identical and
+volume differing by a handful of contracts. That is a few trades landing either side
+of a minute edge — `ts_event` versus `ts_recv` sub-minute assignment — **not** a
+whole-bar shift. A stamping error would have moved all 1,080 bars, not 10.
+
+**VERDICT: `open_stamped`, confident. §0's `[09:30:00, 09:31:00)` stamping is
+correct. Written to `data/timestamp_convention.json`.**
+
+The tick sample is kept at `data/raw/ticks_NQH5_2025-03-04.parquet` ($0.85, paid) so
+this is auditable without re-buying it.
 
 The result is written to `data/timestamp_convention.json` and asserted on every
 subsequent load. **A one-minute error here silently leaks the future into the IB
@@ -140,7 +228,97 @@ The 80% point is computed by **session count**, not calendar date, over the
 **Both holdouts may be opened exactly once, together, at the end.** Opening either
 one early destroys its value and there is no way to restore it.
 
-### 0.2.4 COVID handling
+### 0.2.4 VENDOR DATA QUALITY — degraded days are EXCLUDED, never repaired
+
+The 2010-07-01 → 2026-08-31 pull emitted a `BentoWarning` naming three degraded days
+and truncating the rest with `"..."`. **The warning is not the source of truth.**
+`metadata.get_dataset_condition` is, it is free, and it was queried for the full
+range.
+
+```
+GLBX.MDP3, 2010-07-01 .. 2026-08-31
+  5,101 days returned
+  5,069 available
+     32 degraded          <- the complete list
+      0 pending / missing / any other state
+```
+
+The complete list is committed at **`data/raw/degraded_days.csv`** with columns
+`date, condition, vendor_last_modified, is_rth_session, partition`. It is a
+**provenance artifact, not a cache**: `vendor_last_modified` is recorded so that a
+later re-pull which silently changes a day is detectable.
+
+#### Why exclusion, and why not repair
+
+A degraded day may be missing messages. Missing messages inside the IB window give a
+**narrower observed IB high/low**, and the entire model is built on that window:
+
+```
+IB range   ->  ib_range_atr    ->  the sec (f) no-trade filter
+IB bars    ->  bin_width        =  MEDIAN IB BAR RANGE (sec b.2) -- shrinks too
+profile    ->  POC, VAH, VAL
+risk_R      =  (VAH - VAL) + hard_stop_ticks   (the sec b.10 identity)
+```
+
+The bias has a direction, and it is the flattering one. **A narrower IB is a
+more tradeable-looking session**: it breaks more easily, and it yields a tighter
+stop and therefore a better R multiple. Nothing downstream would flag it — every
+number stays internally consistent, it is simply built on a window that did not
+really look like that.
+
+Repair is not available even in principle. Interpolating an absent high means
+inventing the one number the strategy keys on. **Exclusion loses sessions; repair
+fabricates them.**
+
+#### Where they land — this is the part that matters
+
+| Partition | Degraded RTH sessions | Partition size | Share lost |
+|---|---|---|---|
+| `BACKWARD_HOLDOUT` 2010-07-01 → 2014-12-30 | **2** | 1,119 | 0.18% |
+| `DEVELOPMENT` 2015-01-01 → 2024-04-30 | **9** | 2,402 | **0.37%** |
+| `FORWARD_HOLDOUT` 2024-05-01 → present | **7** | 601 | **1.16%** |
+| not an RTH session (weekend / holiday) | 14 | — | — |
+| **total** | **18 real sessions** | 4,122 | 0.44% |
+
+**They do cluster in DEVELOPMENT rather than the holdouts — 9 of the 18 — but the
+effect on the effective sample is negligible: 0.37%, nine sessions out of 2,402.**
+No result can turn on it, and no conclusion may be attributed to it. The honest
+statement is that the exclusion is done for correctness, not because it changes
+anything measurable.
+
+Two observations worth recording, neither of which changes the decision:
+
+1. **The heaviest share is `FORWARD_HOLDOUT` at 1.16%**, not DEVELOPMENT — degraded
+   days are more frequent in recent years (8 in 2026 alone, 8 in 2014). Still far too
+   small to matter, but it is the holdout, so it is stated rather than discovered
+   later.
+2. **14 of the 32 are not RTH sessions at all** — weekends and holidays, where CME
+   has a Sunday-evening or partial session but no 09:30 open. They are kept in the
+   artifact because the exclusion set should record what the vendor said, not a
+   calendar this project maintains. They simply never match a session.
+
+#### Enforced in code
+
+`ivb/quality.py` reads the artifact; `ivb/backtest.py` drops the session with
+`skip_reason = "vendor_degraded"`. Two ordering rules, both binding:
+
+1. **The quality filter runs FIRST, ahead of `min_ib_range_atr`.** A degraded day
+   narrows the IB, which moves `ib_range_atr`, which is the input to the very next
+   filter. Running quality second would let a corrupted window decide its own
+   admissibility.
+2. **§b.9 excludes the same sessions.** The gate is measured on the IB profile, so
+   measuring it on windows that are missing messages would contaminate the one test
+   Layer 1 depends on. `b9_sensitivity` reports `n_degraded_excluded`.
+
+It appears in the §h.1 funnel as its own named stage with its own count, reconciling
+the same way `min_ib_range_atr` does. It is the only stage that removes sessions for a
+reason with **nothing to do with the market**, and it is labelled that way on the
+chart so it is never read as a strategy filter.
+
+If the artifact is absent, the excluded set is empty and the funnel shows a zero —
+visibly different from "not checked".
+
+### 0.2.4b COVID handling
 
 ```
 covid_flag = True for sessions in 2020-02-15 .. 2020-04-30
