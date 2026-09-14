@@ -3,3 +3,10 @@ __pycache__/
 .venv/
 venv/
 .ipynb_checkpoints/
+
+# Secrets. THE REPO IS PUBLIC -- a committed key is a published key, and git
+# history keeps it after deletion, so the only fix is rotation at the vendor.
+# .env.example IS committed (it holds no value); .env NEVER is.
+.env
+.env.*
+!.env.example

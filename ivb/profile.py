@@ -22,9 +22,66 @@ import pandas as pd
 from .config import TICK_SIZE
 
 # sec b.2 / b.3 / b.6 defaults
-DEFAULT_BIN_SIZE = 1.0        # points (4 ticks)
 DEFAULT_VA_PCT = 0.70
 MIN_ZONE_WIDTH = 2 * TICK_SIZE
+
+# --------------------------------------------------------------------------
+# sec b.2  BIN WIDTH IS RELATIVE, NOT ABSOLUTE -- pre-registered blind
+# --------------------------------------------------------------------------
+# A bin width fixed in POINTS is not the same object at both ends of the sample.
+# NQ traded ~4,200 in 2015 and several times that now, so a 1-minute bar spans a
+# steadily larger number of fixed-width bins as the sample advances. The sec b.9
+# verdict would then differ between 2015 and 2026 for a reason that has nothing to
+# do with the market, and the profile would not be measuring one thing.
+#
+# PRE-REGISTERED PRIMARY RULE (fixed before any real bar was loaded):
+#
+#     bin_width = median 1-minute bar range over THIS session's IB window,
+#                 rounded to the nearest tick, floored at 1 tick.
+#
+# Per session, not per sample: a single sample-wide median drifts across the sample
+# exactly the way a fixed point value does. Computed from IB bars only, so it is
+# known at IB close and carries no lookahead.
+#
+# KNOWN, PRE-REGISTERED WEAKNESS -- READ BEFORE BELIEVING A 'not material' VERDICT.
+# sec b.9 records that the four allocation methods agree when an IB bar spans about
+# ONE bin. This rule sets the bin width to the median bar range, which makes the
+# median bar span ~1 bin BY CONSTRUCTION. It therefore pushes the gate toward
+# 'not material' mechanically. That is the price of scale-invariance, it is
+# registered here in advance rather than discovered afterwards, and the defence is
+# the multiplier sensitivity below: the gate is also reported at 0.5x and 2.0x, and
+# a Layer 1 that is only stable at 1.0x is stable by construction, not by evidence.
+BIN_WIDTH_RULE = "median_ib_bar_range"
+BIN_WIDTH_MULT = 1.0                 # PRIMARY. {0.5, 1.0, 2.0} is the sensitivity.
+BIN_WIDTH_FLOOR_TICKS = 1
+BIN_WIDTH_MULT_GRID = (0.5, 1.0, 2.0)
+
+# The pre-relative default. NOT a primary any more -- kept only so the fixed-width
+# world can be run as a labelled sensitivity and compared against.
+FIXED_BIN_SIZE_SENSITIVITY = 1.0     # points (4 ticks)
+
+
+def bin_width(ib_bars: pd.DataFrame, *, mult: float = BIN_WIDTH_MULT,
+              floor_ticks: int = BIN_WIDTH_FLOOR_TICKS) -> float:
+    """sec b.2 pre-registered bin width, in points, for ONE session's IB window.
+
+    Rounding is half-up and explicit -- numpy rounds halves to even, which would
+    make the width depend on the parity of the tick count.
+    """
+    rng = (ib_bars["high"].to_numpy(float) - ib_bars["low"].to_numpy(float))
+    med = float(np.median(rng)) if len(rng) else 0.0
+    n_ticks = int(np.floor(med * mult / TICK_SIZE + 0.5))
+    return max(int(floor_ticks), n_ticks) * TICK_SIZE
+
+
+def resolve_bin_size(ib_bars: pd.DataFrame, bin_size: float | None,
+                     *, mult: float = BIN_WIDTH_MULT) -> float:
+    """`None` means 'apply the pre-registered rule'. A float is an explicit
+    override and is only ever a labelled sensitivity (sec g.0.1).
+    """
+    if bin_size is None:
+        return bin_width(ib_bars, mult=mult)
+    return float(bin_size)
 
 METHODS = ("volume_uniform", "volume_triangular", "volume_close_only", "tpo_minute")
 METHOD_LABELS = {
@@ -73,7 +130,8 @@ def _span(low: float, high: float, edges: np.ndarray, bin_size: float) -> tuple[
     return i0, max(i0, i1)
 
 
-def allocate(ib_bars: pd.DataFrame, method: str, *, bin_size: float = DEFAULT_BIN_SIZE
+def allocate(ib_bars: pd.DataFrame, method: str, *, bin_size: float | None = None,
+             bin_mult: float = BIN_WIDTH_MULT
              ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Distribute each IB bar into price bins under one allocation method.
 
@@ -82,6 +140,7 @@ def allocate(ib_bars: pd.DataFrame, method: str, *, bin_size: float = DEFAULT_BI
     if method not in METHODS:
         raise ValueError(f"unknown method {method!r}; expected one of {METHODS}")
 
+    bin_size = resolve_bin_size(ib_bars, bin_size, mult=bin_mult)
     ib_low = float(ib_bars["low"].min())
     ib_high = float(ib_bars["high"].max())
     edges, centers = _bins(ib_low, ib_high, bin_size)
@@ -156,8 +215,11 @@ def value_area(centers: np.ndarray, weights: np.ndarray, edges: np.ndarray,
 
 
 def build_profile(ib_bars: pd.DataFrame, *, method: str = "volume_uniform",
-                  bin_size: float = DEFAULT_BIN_SIZE,
+                  bin_size: float | None = None,
+                  bin_mult: float = BIN_WIDTH_MULT,
                   va_pct: float = DEFAULT_VA_PCT) -> Profile:
+    """`bin_size=None` applies the sec b.2 pre-registered relative rule."""
+    bin_size = resolve_bin_size(ib_bars, bin_size, mult=bin_mult)
     edges, centers, w = allocate(ib_bars, method, bin_size=bin_size)
     poc, vah, val = value_area(centers, w, edges, va_pct=va_pct)
     return Profile(method=method, bin_size=bin_size, edges=edges, centers=centers,

@@ -23,6 +23,7 @@ from ivb.config import P0, OUT, sensitivity_grid                         # noqa:
 from ivb.controls import c1_drift, c2_coinflip, c3_inversion, c4_random_time  # noqa: E402
 from ivb.data import load                                                # noqa: E402
 from ivb.partitions import select                                        # noqa: E402
+from ivb.provenance import assert_reportable, banner, classify           # noqa: E402
 from ivb.report import write_step1                                       # noqa: E402
 from ivb.rolls import front_month_bars, load_roll_calendar               # noqa: E402
 from ivb.sessions import build_sessions, daily_features                  # noqa: E402
@@ -38,6 +39,15 @@ def main() -> int:
     do_grid = "--no-grid" not in sys.argv
     cfg = P0
     t0 = time.time()
+
+    # sec b.11 QUARANTINE. Step 1 is nothing BUT reported statistics -- expectancy,
+    # profit factor, the four controls, the funnel. The positive control was tuned
+    # until sec b.9 returned "not material", so it was selected to produce an
+    # outcome and none of these numbers mean anything. Refuse outright.
+    kind = classify(path)
+    for line in banner(kind):
+        print("[03] " + line)
+    assert_reportable(kind, "step1_report")
 
     assert_verified()
     print("[03] timestamp convention verified")
@@ -94,6 +104,7 @@ def main() -> int:
     }
 
     extras = {
+        "source": path,   # sec b.11: carried so write_step1 can re-check it
         "controls": {k: metrics(v, s_all=len(df)) for k, v in controls.items()},
         "cis": cis,
         "c2": {"pct_rank": pct, "p_value": p_val, "n": len(dist)},

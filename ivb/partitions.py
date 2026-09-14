@@ -13,7 +13,11 @@ import pandas as pd
 
 from .config import DATA
 
-BACKWARD_START = pd.Timestamp("2010-01-01")
+# GLBX.MDP3 coverage begins 2010-06-06; 2010-07-01 is the first clean month
+# boundary after it and is the REGISTERED pull start (IVB-SPEC sec 0.2.3).
+# "2010-2014" in prose therefore means 2010-07-01 .. 2014-12-31.
+BACKWARD_COVERAGE_START = pd.Timestamp("2010-06-06")  # vendor limit, not a choice
+BACKWARD_START = pd.Timestamp("2010-07-01")
 DEV_START = pd.Timestamp("2015-01-01")
 DEV_FRACTION = 0.80  # of the 2015->present sample, BY SESSION COUNT
 

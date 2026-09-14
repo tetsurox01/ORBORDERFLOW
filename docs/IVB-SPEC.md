@@ -37,6 +37,34 @@ symbols   NQ.FUT, stype_in=parent       INDIVIDUAL CONTRACTS, never a pre-built
 Individual contracts are mandatory: the §0.1.1 roll calendar is computed from
 per-contract RTH volume, which a vendor-built continuous series does not expose.
 
+#### Pricing: NEVER extrapolate a cost between schemas, in either direction
+
+**Observed on this account: `ohlcv-1m` billed at roughly `$66 / GB`, not the
+`$0.50 / GB` headline rate** — a factor of ~130. This is not an error and not a
+surcharge. Databento prices an aggregated schema against the **underlying message
+volume it was built from**, not against the bytes delivered. A 1-minute bar is a
+heavy compression of the trades and quotes underneath it, so the delivered file is
+small and the thing being paid for is not.
+
+The binding consequence:
+
+> **A bar cost predicts nothing about a tick cost, and a tick cost predicts nothing
+> about a bar cost.** Do not reason "ticks are ~N× more data, so ~N× the price";
+> do not reason from `$/GB` at all across schemas. The direction of the error is not
+> even fixed — `trades` is raw, so it may well be *cheaper* per gigabyte than the
+> aggregate built from it, which is the opposite of the intuition.
+
+The only admissible number for any pull is the one `metadata.get_cost` returns for
+that **exact** dataset, schema, symbology and date window. Both `get_cost` and
+`get_billable_size` are free metadata calls, so there is never a reason to guess.
+
+`scripts/01b_price_ticks.py` prices the Step 4 `trades` pull on this basis. It is
+**estimate-only by construction** — it contains no `timeseries` request and no
+`IVB_CONFIRM_SPEND` branch at all, so it cannot spend money even if run wrongly.
+Acquiring tick data inside an expiring credit window is an **acquisition** decision;
+it is independent of the §g.1 research gates and grants Layer 2 no standing
+whatsoever. Cheap data is not evidence.
+
 ### 0.2.2 FIRST TASK — verify the bar timestamp convention empirically
 
 **Do not assume §0's `[09:30:00, 09:31:00)` stamping is correct.** Databento
@@ -67,10 +95,37 @@ and would invalidate every result in this project.** It is the single highest-va
 ### 0.2.3 Sample partitions — three, fixed now
 
 ```
-BACKWARD_HOLDOUT   2010-01-01 .. 2014-12-31     SEALED
+BACKWARD_HOLDOUT   2010-07-01 .. 2014-12-31     SEALED
 DEVELOPMENT        2015-01-01 .. ~80% point     all of Steps 1-5 happen here
 FORWARD_HOLDOUT    ~80% point .. present        SEALED
 ```
+
+#### Why the backward holdout starts in JULY 2010, not January
+
+Not a choice about regimes, and not a preference. Two separate facts, recorded
+together so the partition is never mistaken for a judgement call:
+
+```
+2010-06-06    GLBX.MDP3 dataset coverage begins.
+              Databento has NO data before this date. 2010-01-01 was never
+              available to ask for. This is a vendor boundary, not a decision.
+
+2010-07-01    REGISTERED PULL START.
+              The first clean month boundary at or after coverage begins.
+              Chosen so the sec (i) monthly block bootstrap gets whole blocks
+              at BOTH ends of the sample, the same reason the end is 2026-08-31.
+```
+
+So the partition is labelled "2010–2014" in prose for brevity, and it is really
+**2010-07-01 → 2014-12-31**: roughly 4.5 years, not 5. The ~24 sessions of June
+2010 that *do* exist are deliberately not pulled — a partial month is worth less
+than a clean bootstrap block, and the holdout is a regime check, not a
+sample-size exercise.
+
+Nothing downstream moves. `DEV_START` is hardcoded at `2015-01-01` in
+`ivb/partitions.py` and the 80% split is computed over sessions ≥ 2015 only, so
+the start date of the backward holdout cannot shift `DEVELOPMENT` or
+`FORWARD_HOLDOUT` by a single session.
 
 The 80% point is computed by **session count**, not calendar date, over the
 2015-to-present sample, and written once to `data/partitions.json`. On a
@@ -78,7 +133,7 @@ The 80% point is computed by **session count**, not calendar date, over the
 
 | Partition | Approx. sessions | Purpose |
 |---|---|---|
-| `BACKWARD_HOLDOUT` 2010–2014 | ~1,255 | Second out-of-sample check. Different regime (post-GFC recovery, low vol, pre-2018 volmageddon). A strategy that works 2015+ but fails 2010–2014 is regime-dependent — a finding, not a disqualification, but it must be stated. |
+| `BACKWARD_HOLDOUT` 2010-07-01 → 2014-12-31 | ~1,130 | Second out-of-sample check. Different regime (post-GFC recovery, low vol, pre-2018 volmageddon). A strategy that works 2015+ but fails 2010–2014 is regime-dependent — a finding, not a disqualification, but it must be stated. |
 | `DEVELOPMENT` 2015 → ~2024-05 | ~2,345 | Steps 1–5. Walk-forward validation happens **entirely inside this partition** (see §g.1.5). |
 | `FORWARD_HOLDOUT` ~2024-05 → present | ~585 | Final check, opened once. |
 
@@ -368,15 +423,19 @@ chart and in every result table derived from it.
 
 **Two things make this worse than it first looks:**
 
-1. **The sample is tiny.** A 30-minute IB gives **30 bars**. That is 30 volume
-   observations spread over a range that, at `bin_size = 1.0 pt` and a typical NQ
-   IB, is 30–60 bins. There are fewer observations than bins. A POC built from that
-   is a weak statistic by construction, before any distribution assumption is even
-   applied. At `ib_minutes = 15` it is 15 bars and the problem roughly doubles.
+1. **The sample is tiny.** A 30-minute IB gives **30 bars** — 30 volume
+   observations, however the bins are drawn. Under a fixed 1.0-point bin and a
+   typical NQ IB that was 30–60 bins, i.e. fewer observations than bins. The §b.2
+   relative rule improves the ratio (the bin scales with the bar, so the bin count
+   is roughly the IB range measured in median bars) but it does not create
+   observations: a POC built from 30 numbers is a weak statistic by construction,
+   before any distribution assumption is applied. At `ib_minutes = 15` it is 15 bars
+   and the problem roughly doubles.
 2. **The assumption sits directly on the decision boundaries.** VAH is the entry
-   and VAL is the stop. A distribution assumption that shifts VAL by a few ticks
-   shifts `risk_R` — and therefore every R multiple, the stop-out rate, and the
-   headline R:R claim in §c.3.
+   and VAL is the stop. A distribution assumption that shifts either by a few ticks
+   shifts `risk_R` — and, because `risk_R = (VAH − VAL) + hard_stop_ticks` exactly
+   (§b.10), it shifts every R multiple, the stop-out rate, and the headline R:R
+   claim in §c.3. The hard stop adds a constant; it damps nothing.
 
 #### The asymmetry with Layer 2, stated explicitly
 
@@ -412,11 +471,96 @@ Test directly: compare the forward MFE of breakouts that re-enter the IB against
 those that do not. If re-entering breakouts have materially worse outcomes, Layer 1
 is trading an adversely selected subset and the tighter stop cannot save it.
 
-### b.2 Volume distribution method
+### b.2 Volume distribution method — and the bin width, which is RELATIVE
+
+#### The bin width is a function of bar height, not a number of points
+
+A bin width fixed in **points** is not the same object at both ends of the sample.
+NQ traded ~4,200 in 2015 and several times that now, and a 1-minute bar's height
+scales with the index. A bar that smeared across 3 bins in 2015 smears across 10 or
+more in 2026 at the same fixed width. Two consequences, both fatal to the section
+that follows:
+
+1. **The §b.9 verdict would differ between 2015 and 2026 for a reason that has
+   nothing to do with the market.** The profile would not be measuring one thing
+   across the sample, so nothing measured on it would be comparable end to end.
+2. **Bin width is the lever that decides whether §b.9 passes** (see the mechanism
+   note in §b.9). Choosing it after looking at real bars is therefore selection on
+   the outcome of a gate — the exact failure the gate exists to prevent.
+
+So it is pre-registered here, **blind**, before any real bar was loaded:
 
 ```
-bin_size   DEFAULT 1.0 pt (4 ticks)      range 0.25 - 2.0 pt
-bins       from floor(IB_low / bin) to ceil(IB_high / bin)
+PRE-REGISTERED PRIMARY (sec g.1)
+
+    bin_width = median 1-minute bar range over THIS session's IB window,
+                rounded to the nearest tick, floored at 1 tick
+
+    bin_width_rule   = median_ib_bar_range
+    bin_width_mult   = 1.0          PRIMARY
+    bin_width_floor  = 1 tick
+    rounding         = half-up, explicit (numpy rounds halves to even, which would
+                       make the width depend on the parity of the tick count)
+```
+
+**Per session, not per sample.** A single sample-wide median drifts across the
+sample exactly the way a fixed point value does; only a per-session width is
+scale-free at both ends. It is computed from IB bars alone, so it is known at IB
+close and carries **no lookahead**.
+
+**Every other bin width is a labelled sensitivity, never the primary** (§g.0.1). The
+reported sensitivity axis is the multiplier:
+
+```
+bin_width_mult in {0.5, 1.0, 2.0}      0.5 and 2.0 are REPORTED, never selected
+bin_size_pts = 1.0                     the old fixed width, kept only as the
+                                       "what it used to be" comparison row
+```
+
+For the **§b.9 gate specifically** the three multipliers are not read independently:
+the pre-registered resolution rule in §b.9 requires `not material` at all three for a
+pass, and any single `MATERIAL` resolves the whole verdict to `MATERIAL`. That is a
+veto, not a selection — the primary is still never moved onto a neighbouring row.
+
+#### The weakness this rule has, stated in advance
+
+§b.9 records that the four allocation methods agree when an IB bar spans about
+**one** bin. This rule sets the bin width **to** the median bar range, so the median
+bar spans ~1 bin **by construction**. It therefore pushes the §b.9 gate toward
+`not material` mechanically.
+
+That is registered here rather than discovered afterwards, and it is the price of
+scale-invariance — the alternative (a fixed point width) is worse, because it makes
+the gate's answer a function of the calendar. The defence is the multiplier
+sensitivity above:
+
+> **A `not material` verdict at `mult = 1.0` alone is weak evidence.** Read the 0.5×
+> and 2.0× rows next to it. A Layer 1 that is stable only at the multiplier which
+> forces the methods to agree is stable **by construction, not by evidence**, and
+> must be reported that way. The primary is still never changed on the strength of
+> a sensitivity row — that would be selection.
+
+**Measured effect on the two controls** (synthetic; see §b.9 and §b.11). Both
+verdicts survived the switch from the fixed 1.0-point bin to the relative rule:
+
+```
+                       fixed 1.0 pt bin        relative bin (mult 1.0)
+negative control       MATERIAL, 3 of 4        MATERIAL, 3 of 4   (full sample)
+                       1 of 3                  1 of 3             (300-window draw)
+positive control       not material, 0 of 3    not material, 0 of 3
+```
+
+So the predicted weakening did **not** show up as a changed verdict or a changed
+trip count on synthetic data — though the condition carrying the negative control's
+trip on the small draw moved from `d_risk p50` to `d_risk p90`. That is reassurance
+about the implementation, **not** about real bars: the construction argument above
+holds regardless of what a synthetic draw happens to show, which is why the
+multiplier sensitivity is mandatory rather than optional.
+
+#### The allocation itself
+
+```
+bins       from floor(IB_low / bin_width) to ceil(IB_high / bin_width)
 for each IB bar:
     span = bins overlapped by [low, high]
     each overlapped bin receives volume / len(span)      # uniform
@@ -453,7 +597,9 @@ va_pct   DEFAULT 0.70     range 0.60 - 0.80
 ### b.4 POC stability test — a gate, not a nice-to-have
 
 Before Layer 1 enters any backtest, compute per session the spread of POC location
-across `bin_size` in {0.5, 1.0, 2.0}, in ticks.
+across `bin_width_mult` in {0.5, 1.0, 2.0} — i.e. across half, one and two times the
+session's own median IB bar range (§b.2), **not** across fixed point widths. Report
+in ticks.
 
 If the **median spread exceeds 4 ticks (`poc_stability_gate_ticks`)**, the POC is
 noise and Layer 1 is built on sand. Report this distribution **before** reporting
@@ -520,9 +666,14 @@ almost certainly flattering one — and the conservative model has to carry the
 headline instead. The threshold is fixed here, before the fraction is known, so it
 cannot be renegotiated after the fact.
 
-Measured on the synthetic preview: **21.4% of fills** (77 / 360). Below the
-threshold, so front-of-queue stays primary — but this is random-walk data and the
-number must be re-measured on real NQ bars before it decides anything.
+Measured on the **negative control** (random walk, relative bins): **20.7% of
+fills** (85 / 411). Below the threshold, so front-of-queue stays primary — but this
+is random-walk data and the number must be re-measured on real NQ bars before it
+decides anything.
+
+**This switch may never be read off the positive control.** That is not a special
+rule for §b.7; it is the general quarantine in **§b.11**, which this section was the
+first instance of.
 
 ### b.8 Retracement time limit
 
@@ -577,8 +728,18 @@ Also compute, for each method, the **E1 fill rate** — the fraction of breakout
 sessions where that method's near VA edge is touched inside `reload_timeout` — and:
 
 ```
-d_fill_rate = max - min of the four fill rates, in percentage points
+d_fill_rate  = max - min of the four fill rates, in percentage points
+d_fill_count = max - min of the four fill COUNTS, in sessions
 ```
+
+**`d_fill_count` is reported next to `d_fill_rate`, always, never instead of it.**
+The rate is the gate trigger; the count is what the rate means. A spread of a few
+percentage points reads as small, and then multiplies by `n_breakout` into a large
+absolute swing in `S_filled` — which is the denominator of every Layer 1 per-trade
+statistic there is. The worked example in §b.10 is a 51-session, 14% swing in
+`S_filled` produced by a bin-width change alone, at no change in the underlying
+sessions. Report `d_fill_count` as a count and as a percentage of the primary
+method's own fill count.
 
 #### "Material" defined numerically, not by eye
 
@@ -604,14 +765,134 @@ MATERIAL if ANY of the following holds:
   p50(d_POC)    > 4 ticks                            # the §b.4 stability gate
 ```
 
+#### THE MULTIPLIER RESOLUTION RULE — pre-registered BLIND
+
+Written here **before any real number exists**, because the reason it is needed is
+structural and is already known.
+
+The §b.2 rule sets `bin_width` **to** the median IB bar range. The median bar
+therefore spans ~1 bin **by construction**, and ~1 bin per bar is exactly the
+condition under which M1–M4 cannot disagree (mechanism note below). The primary
+multiplier sits at the position that *maximises method agreement*. A lone
+`not material` at `mult = 1.0` is consistent with a stable profile and equally
+consistent with the bin rule doing its job — the single row cannot separate them.
+
+So the verdict is resolved over the whole multiplier set, not read off the primary:
+
+```
+GRID:  bin_width_mult in {0.5, 1.0, 2.0}      (1.0 = the pre-registered primary)
+
+  MATERIAL at ANY of the three   ->   the RESOLVED §b.9 VERDICT is MATERIAL
+  a PASS requires "not material" at ALL THREE
+
+  No other combination is a pass.
+```
+
+Three points about what this rule is and is not:
+
+1. **It is a conjunction, not a selection.** The neighbours can only ever **veto**.
+   They can never rescue a primary that trips, and the primary is never moved onto a
+   neighbouring row — that would be selection on the outcome (§g.0.1). `mult = 1.0`
+   remains the only row that carries the pre-registration.
+2. **It is deliberately asymmetric, and that is the point.** It makes a pass strictly
+   harder to obtain than a `MATERIAL`, because the by-construction bias runs in
+   exactly one direction: toward agreement, toward a pass. The rule removes the free
+   pass that bias would otherwise hand out.
+3. **The consequence of `MATERIAL` is unchanged** — it is the downgrade written below
+   under "Consequence of a MATERIAL result". A resolved `MATERIAL` triggered only by
+   a neighbour carries the same consequence as one triggered by the primary. There is
+   no lesser grade of failure here.
+
+The rule is committed now, run **once** on real bars, and the answer is taken as it
+comes. It is never re-opened after the number is seen.
+
 #### The gate is decided on REAL bars only
 
-This test reads volume, so it can only be *decided* on real NQ bars. A synthetic
-generator that draws bar volume independently of price — which the one in
-`tests/make_synthetic.py` does, `rng.integers(200, 2000)` — leaves no volume
-structure for a profile to find. `POC` is then a random draw, the four methods
-disagree freely, and the gate trips every time. Running it on synthetic data is a
-useful check that the gate *fires*; its verdict is not admissible.
+This test reads volume, so it can only be *decided* on real NQ bars. Its verdict on
+any synthetic file is **not admissible**. What synthetic data is for is showing that
+the gate works **in both directions**.
+
+#### TWO CONTROLS — because a gate that can only trip has never been tested
+
+A gate that has only ever been run on data where it *must* trip has never executed
+its pass branch. `MATERIAL` would then not be evidence about Layer 1; it would be
+the only answer the test is capable of producing. Both controls are therefore
+required, and both are run before the gate is believed.
+
+```
+NEGATIVE CONTROL   data/raw/synthetic.parquet              (structure="random_walk")
+  Bar volume is rng.integers(200, 2000) -- i.i.d. and INDEPENDENT of price. No
+  volume structure exists for a profile to find, POC is a random draw, the four
+  methods disagree freely.
+  REQUIRED RESULT: MATERIAL. If this does NOT trip, the gate is broken.
+  MEASURED under the sec b.2 RELATIVE bin width (mult 1.0):
+            MATERIAL. d_risk p50 10.0 / p90 26.0 ticks, d_POC p50 11.0,
+            median risk_to_hard_stop 47.0 ticks, d_fill_rate 9.4 pp,
+            n_breakout 604, realised bin width p50 11.0 ticks.
+            Three of four conditions trip (d_fill_rate does not).
+            Bin-width sensitivity: MATERIAL at mult 0.5, 1.0 and 2.0 alike.
+
+POSITIVE CONTROL   data/raw/synthetic_structured.parquet   (structure="anchored_volume")
+  Inside the IB window only: price is AR(1) around a slowly drifting anchor, and
+  bar volume is a Gaussian kernel of the bar's distance from that anchor. A real
+  POC therefore exists -- price spends most of its TIME near the anchor and most of
+  its VOLUME there too. After the IB the process is the same driftless random walk,
+  scaled so IB_range / ATR14 stays realistic.
+  REQUIRED RESULT: not material. If this trips, the gate has still never passed.
+  MEASURED under the sec b.2 RELATIVE bin width (mult 1.0):
+            not material. d_risk p50 0.0 / p90 8.0 ticks, d_POC p50 3.0,
+            median risk_to_hard_stop 23.0 ticks, d_fill_rate 2.1 pp,
+            n_breakout 606, realised bin width p50 3.0 ticks.
+            All four conditions clear.
+            Bin-width sensitivity: not material at mult 0.5, 1.0 and 2.0 alike.
+
+  QUARANTINED (sec b.11). The line above is the ONLY thing this file is permitted
+  to source anywhere in this project. Its fill rates, exit mix, touch-only
+  fraction, funnel counts, MFE distribution and PnL are all withheld in code.
+```
+
+Both controls pass, so from this point a `MATERIAL` verdict on real bars carries
+information and a `not material` verdict does too.
+
+#### What the positive control revealed about the gate's real mechanism
+
+The anchored generator's parameters were tuned until the verdict came out
+`not material`. That is what a positive control is for. **The gate's thresholds were
+not touched** — tuning those would be fitting the gate to a verdict rather than
+testing it.
+
+Tuning it exposed what `d_POC` and `d_risk` are actually driven by, and it is worth
+stating because it predicts how the gate will behave on real NQ:
+
+> **The four methods agree when an IB bar spans about ONE profile bin.**
+> When a bar's `[low, high]` covers a single bin, "where inside the bar did the
+> volume trade" has nowhere to disagree, and M1, M2 and M3 collapse onto each other.
+> The volume-versus-time structure then aligns M4 (pure bar count) with them. Under
+> the old **fixed** 1.0-point bin this showed up as a difference in absolute bar
+> height: the positive control held IB bar range near 0.9 points, the negative
+> control's was 2.5–3.0 points, and it tripped.
+
+**This mechanism is why §b.2 pre-registers the bin width blind.** Bin width is the
+lever that decides the verdict, so picking it after seeing real bars would be
+selection on the outcome of the gate itself.
+
+**And it is why the §b.2 rule carries a stated weakness.** Setting
+`bin_width = median IB bar range` makes the median bar span ~1 bin *by
+construction*, i.e. it sets the lever to the position that maximises agreement.
+Two consequences, both binding:
+
+1. The two controls no longer separate on absolute bar height — the bin scales with
+   the bar — so they now separate on **volume structure alone**, which is what they
+   were always meant to test. Both verdicts survived the switch (§b.2).
+2. **A `not material` verdict at `mult = 1.0` is weak on its own.** It must be read
+   next to the `mult` ∈ {0.5, 2.0} rows. If the primary passes and a neighbour does
+   not, the pass is partly the rule's own doing and must be reported as such. The
+   primary is **never** moved onto a neighbour — that is selection (§g.0.1).
+
+The `b7` touch-only fill rate and the exit-mix are **not** comparable across the two
+files: the positive control's narrow bars make a limit fill almost always a graze.
+Those rates are decided on real bars only, and `scripts/04_charts.py` refuses to
+read a §b.7 switch off the positive control.
 
 `d_VAL`, `d_VAH` and `d_zone` are still **reported** — they say *where* the movement
 came from, which is what gets diagnosed if the gate trips — but they are not
@@ -677,6 +958,164 @@ Both stops sit in essentially the same place — 4705.25 against 4705.00, one ti
 apart. The entire ~5-point risk reduction is the entry: **4714.00 instead of
 4719.25.** Layer 1 is a *better-price* rule wearing a *tighter-stop* costume.
 
+#### And the close rule barely fires, because it has almost no room to
+
+`risk_R` is not the only thing the close rule fails to move. Measure the band it can
+fire in at all. For a long, the rule needs a `TF_inval` close **below `VAL`**, but
+at `VAL - hard_stop_ticks` the resting stop has already filled. So the rule lives
+entirely inside:
+
+```
+inval_window = |far_VA_edge - hard_stop| = hard_stop_ticks
+```
+
+That is a **constant**, not a distribution. Measured over every fill on both
+synthetic files: `p10 = p50 = p90 = min = max = 8.0 ticks`, exactly
+`hard_stop_ticks`. It does not vary with the profile, the session, the value-area
+width, or anything a market does. It is reported anyway, on every Layer 1 run,
+because a number that is constant *by construction* should be shown to be constant
+rather than assumed to be.
+
+Against a median `risk_to_hard_stop` of 44 ticks on the negative control, that
+window is ~18% of the distance to the stop, and it only fires if a 5-minute close
+lands inside it without the low having touched the stop first. Observed firing rate:
+
+```
+close_invalidation share of all Layer 1 exits
+  negative control (random walk)       23 / 411   =  5.6%
+  positive control (structured vol)    WITHHELD -- sec b.11 quarantine
+```
+
+The positive control's rate was previously quoted here. It has been removed: that
+file's generator was tuned until §b.9 returned `not material`, so every statistic in
+it was selected alongside that verdict, and an exit mix is not the one thing it is
+allowed to source (§b.11).
+
+#### THE COUPLING: `risk_R` **is** the value area width
+
+The two rules compose into an identity, and it is the most important sentence in
+this section. For a long, entry is `VAH` and the hard stop is `VAL - hard_stop_ticks`;
+for a short, entry is `VAL` and the hard stop is `VAH + hard_stop_ticks`. Either way:
+
+```
+risk_R = |entry - hard_stop| = (VAH - VAL) + hard_stop_ticks
+```
+
+Verified exactly, both directions, over 240 profiles drawn from both generators:
+worst deviation 0.0 points (`tests/test_controls.py`).
+
+So `risk_R` is the **value-area width plus a constant**, and every quantity built on
+it is a linear function of that width:
+
+```
+risk_R  = VA_width + hard_stop_ticks
+TP1     = entry +/- 2 * risk_R          = entry +/- 2 * (VA_width + hard_stop_ticks)
+every R multiple, the stop-out rate, and the sec c.3 headline claim
+```
+
+`VA_width` is **exactly** the quantity §b.9 measures the instability of. `d_risk` is
+defined there as the spread of `(VAH - VAL)` across the four allocation methods,
+"since the +/- `hard_stop_ticks` constant cancels". It cancels in the *spread* — and
+that is the point:
+
+> **The hard stop does NOT insulate the strategy from the profile's instability.**
+> It adds a constant. A constant shifts the level and cannot damp the spread by a
+> single tick. Whatever §b.9 reports as `d_risk` passes straight through, undiluted
+> in absolute terms, into `risk_R`, into TP1 at 2R, into every R multiple, and into
+> the 1:2 / 1:2.5 claim §c.3 exists to test.
+>
+> Measured on the negative control: median `VA_width` = 36 ticks, median `risk_R` =
+> 44 ticks, so `hard_stop_ticks` is **18%** of `risk_R` and the profile is the other
+> **82%**. If §b.9 returns `MATERIAL` on real bars, Layer 1's risk denominator is
+> assumption-driven and there is no part of the exit rule that repairs it.
+
+#### WORKED EXAMPLE — the profile also moves the TRADE COUNT, not only `risk_R`
+
+The coupling above is about the *size* of `risk_R`. There is a second channel, and it
+is the one that is easy to miss because nothing in the identity shows it: the profile
+decides **which sessions become trades at all**. The entry is a limit at the near VA
+edge. Move the edge and a session that was filled is no longer filled, or the reverse.
+`S_filled` is not a property of the market — it is a property of the assumption.
+
+This was observed directly, on the **same file and the same sessions**, when the
+§b.2 bin width changed from a fixed 1.0 point to the relative rule:
+
+```
+                                fixed 1.0-pt bin      relative bin (mult 1.0)
+  S_sessions                          624                      624
+  S_ib_broke                          604                      604
+  S_passed_filters                    581                      581
+  S_filled                            360                      411      <-- +51
+```
+
+Read what that is. The first three stages are **Layer 0 only** — no profile is built
+yet — and they are identical to the session. Every one of the 51 extra trades is
+produced by the bin-width rule and by nothing else. That is **+14.2% Layer 1 trades**
+from a parameter that has no market meaning, on a fixed set of sessions, with no
+price, no volume and no filter changed.
+
+Four consequences, all binding:
+
+1. **`S_filled` is never quoted without the bin-width rule that produced it.** A
+   trade count is an assumption-conditional quantity in Layer 1, the same way an R
+   multiple is.
+2. **Every per-trade Layer 1 statistic has `S_filled` in its denominator** —
+   expectancy per trade, win rate, profit factor, the exit-mix shares, the MFE
+   quantiles. A 14% move in the denominator moves all of them, and it moves them
+   *without any of them being wrong*. Two honest runs can disagree for this reason
+   alone.
+3. **A sample-size argument is now suspect.** "n is large enough" is not a defence
+   when n itself is set by the assumption under test. `n_breakout` (Layer 0, real) and
+   `S_filled` (Layer 1, assumption-conditional) are different kinds of number and are
+   never used interchangeably — §h.1 already forbids merging those funnel stages, and
+   this is why.
+4. **§b.9 must therefore report `d_fill_count` next to `d_fill_rate`.** The rate is
+   the gate trigger; the count is the consequence. On this example a change too small
+   to trip a 10-percentage-point rate threshold still moved the trade count by 51.
+
+Note the direction of the evidence: this example is a **bin-width** change, not a
+**method** change, so it does not itself prove that M1–M4 disagree on real bars. What
+it proves is that the fill count is *mechanically sensitive to the profile*, which is
+the reason `d_fill_count` is measured at all. Whether the four methods actually move
+it is decided on real bars by §b.9. The counts above are synthetic (negative control)
+and are cited as a **mechanism demonstration only**, never as a magnitude.
+
+#### `hard_stop_ticks = 8` is a FREE PARAMETER with no justification
+
+It was chosen because a close-based rule needs *some* hard stop behind it (§c.1),
+and 8 ticks = 2.0 points is a round number. There is no argument in this document,
+or in the source transcript, for 8 rather than 5 or 12. It is the constant in the
+identity above, so it sets what fraction of `risk_R` is *not* the profile — which
+makes it the one knob that could be quietly tuned to make the coupling look smaller.
+
+Binding rules:
+
+1. `hard_stop_ticks` is **swept over its full §f range {4, 8, 12, 16, 20} and
+   reported as a table**, on every Layer 1 result, next to `risk_R`,
+   `close_invalidation` share and expectancy.
+2. **It is never tuned.** P1 stays at 8. The sweep is a labelled sensitivity under
+   §g.0.1 and can never pass, fail, or rescue a gate, and its argmax is never a
+   headline.
+3. A wider `hard_stop_ticks` mechanically dilutes the profile's share of `risk_R`.
+   If Layer 1 only looks stable at a wide hard stop, that is the hard stop hiding
+   §b.9, not Layer 1 working.
+
+> **CONCLUSION, binding on Step 3.** Combine the two findings. The close-beyond-VAL
+> rule (1) cannot shrink `risk_R` by one tick, and (2) fires on roughly 6–19% of
+> exits, inside a window that is a fixed `hard_stop_ticks` wide. **Model 1's stated
+> mechanism — the tighter VA-based stop — therefore contributes almost nothing.**
+> What remains of Layer 1 is the **ENTRY PRICE alone**: `VAH` instead of
+> `IB_high + buffer`.
+>
+> Step 3 must be built and reported as a test of *entry price*, not of stop
+> placement. Its control is Layer 0's own entry and stop on the same sessions. The
+> close rule is a **second-order effect** and is reported separately — its
+> `close_invalidation` share and the average loss realised on those exits versus a
+> full `risk_R` — never folded into the headline Layer 1 claim.
+>
+> If Layer 1 fails as an entry-price rule, it fails. There is no tighter-stop
+> benefit left to rescue it.
+
 Three consequences, all binding:
 
 1. **Report two risk numbers on every Layer 1 trade, always:**
@@ -695,6 +1134,87 @@ Three consequences, all binding:
    categories are closed and enumerated:
    `{tp1, close_invalidation, hard_stop, time_stop}`, and their **frequencies are
    reported with every Layer 1 result**, zero counts included.
+
+---
+
+### b.11 THE POSITIVE-CONTROL QUARANTINE — a general rule, enforced in code
+
+§b.7 already refused to read its fill-model switch off the positive control. That
+was the right instinct applied to one statistic. Generalised:
+
+> **`data/raw/synthetic_structured.parquet` may be used for exactly ONE thing: to
+> prove that the §b.9 gate's PASS branch executes. It may never source a reported
+> statistic — not a fill rate, not an exit mix, not a `close_invalidation`
+> frequency, not a funnel count, not an MFE quantile, not PnL.**
+
+#### Why this is stronger than "be careful with synthetic data"
+
+The negative control and the positive control are **not** equally compromised, and
+collapsing them into one "it's synthetic" caveat gets the positive control wrong:
+
+| | negative control | positive control |
+|---|---|---|
+| Generator | driftless random walk, volume i.i.d. and independent of price | AR(1) around a drifting anchor, volume a kernel of distance from it |
+| How its parameters were set | written once to be the null | **tuned until §b.9 returned `not material`** |
+| So its numbers are | synthetic, and not findings about NQ | synthetic, **and selected to produce an outcome** |
+| Status | not quarantined; still inadmissible as a claim about NQ | **quarantined** |
+
+The tuning targeted one verdict. Every other statistic in that file — the fill rate,
+the exit mix, the `close_invalidation` share — moved as a *side effect* of that
+tuning, without anyone deciding to select it. A number that was selected without
+anyone noticing is worse than a number that was selected on purpose, because nothing
+in the output marks it.
+
+#### Enforcement
+
+Prose caveats are a thing a future session has to read and remember. This one is
+mechanical, in `ivb/provenance.py`:
+
+```
+classify(path)              -> negative_control | positive_control | real
+assert_reportable(kind, s)  -> raises QuarantineError unless s == "b9_gate_verdict"
+redact(kind, s, text)       -> replaces the VALUE, keeps the LABEL, so a withheld
+                               number is visibly withheld rather than absent
+POSITIVE_CONTROL_ALLOWED    = frozenset({"b9_gate_verdict"})   # a list of one
+```
+
+Wired in at four points:
+
+1. **`scripts/03_run_step1.py` refuses to run at all** on the positive control.
+   Step 1 is nothing but reported statistics.
+2. **`ivb/report.py::write_step1` re-checks** `extras["source"]` — a second line of
+   defence for any other caller that reaches the artifact writer.
+3. **`scripts/04_charts.py` redacts every console statistic** on that file: the exit
+   taxonomy, the §b.10 window, the §b.10 coupling numbers, the touch-only fraction.
+   The §b.9 block prints in full, because that is the permitted use.
+   **Edge case, stated so it is not mistaken later.** That block contains
+   `fill_rates`, `fill_counts` and `d_fill_count`, and on the positive control they
+   are still visible. They are **gate internals** — inputs to the one permitted
+   output, the verdict — not reported fill statistics. They may be read as "how far
+   apart are M1–M4 on this file" and for nothing else. The positive control's fill
+   rate, fill count and `S_filled` may never be quoted as a property of the
+   strategy, compared against the negative control, or carried into any funnel,
+   denominator or per-trade figure. §b.7 already refuses to read a fill-model switch
+   off this file for exactly this reason.
+4. **Charts 3, 4 and 5 are not drawn at all** on the positive control — the funnel,
+   the MFE distribution with TP1, and the Layer 3 cell counts are pure statistics
+   with no part in proving the gate's pass branch. Chart 1 drops from four sessions
+   to one, chosen on IB range alone, because the normal selection is **by outcome**
+   (a TP1 long, a `no_fill`, a `close_invalidation`, a TP1 short) and outcome
+   selection on a file tuned to an outcome is selection twice over.
+
+Observed: `python scripts/04_charts.py data/raw/synthetic_structured.parquet` now
+writes **2** charts and prints `[QUARANTINED -- positive control]` in place of every
+withheld figure. The negative control still writes 8.
+
+Covered by 6 assertions in `tests/test_controls.py`.
+
+#### The rule that generalises past this one file
+
+Any future control, dataset or fixture whose parameters were **tuned until a test
+returned a wanted answer** is quarantined the same way, and is added to
+`ivb/provenance.py` rather than to a paragraph. The test it was tuned for is the
+only thing it may ever source.
 
 ---
 
@@ -787,6 +1307,16 @@ risk_to_VAL       = |entry - far_VA_edge|    # what the source's framing quotes.
 
 They differ by `hard_stop_ticks` exactly. Both are printed so the gap between the
 source's framing and ours is visible rather than argued about.
+
+**And both are the value-area width in disguise** (§b.10):
+
+```
+risk_to_VAL       = VAH - VAL
+risk_to_hard_stop = VAH - VAL + hard_stop_ticks      # = risk_R
+```
+
+So the §b.9 instability in `(VAH - VAL)` is the instability in `risk_R`. The hard
+stop adds a constant and damps nothing.
 
 ### c.3 The claim to test directly
 
@@ -1073,7 +1603,10 @@ across deciles, that is a Layer 3 feature, not a new filter.
 | Param | Default | Range | Notes |
 |---|---|---|---|
 | `profile_source` | `volume_uniform` | {`volume_uniform`, `volume_triangular`, `volume_close_only`, `tpo_minute`} | |
-| `bin_size_pts` | 1.0 | 0.25 – 2.0 | |
+| **`bin_width_rule`** | **`median_ib_bar_range`** | — | **§b.2. Bin width is RELATIVE, pre-registered blind.** `bin_width` = median 1-minute bar range over this session's IB window, rounded to the nearest tick, floored at 1 tick. A width fixed in points is a different fraction of a bar in 2015 and in 2026, which would make the §b.9 verdict a function of the calendar. |
+| **`bin_width_mult`** | **1.0** | {0.5, 1.0, 2.0} | **Sensitivity axis, never optimised (§g.0.1).** The primary makes the median bar span ~1 bin by construction, which is the condition that forces the four §b.9 methods to agree — so the 0.5× and 2.0× rows must be read next to any `not material` verdict. **For the §b.9 gate the three rows resolve by the pre-registered rule: `MATERIAL` at any one of them makes the verdict `MATERIAL`; a pass needs all three clear.** |
+| `bin_width_floor_ticks` | 1 | — | A bin narrower than a tick is meaningless. |
+| `bin_size_pts` | 1.0 | 0.25 – 2.0 | **No longer a primary.** The pre-relative fixed width, kept only as a labelled comparison row. |
 | `va_pct` | 0.70 | 0.60 – 0.80 | |
 | `poc_tiebreak` | `nearest_ib_mid` | — | deterministic |
 | `entry_variant` | `E1` | {E1, E2, E3} | E1 = VA edge |
@@ -1082,7 +1615,7 @@ across deciles, that is a Layer 3 feature, not a new filter.
 | `reload_timeout_min` | 30 | 10 – 60 | |
 | `tf_inval_min` | 5 | {1, 3, 5, 15} | |
 | `inval_buffer_ticks` | 0 | 0 – 4 | |
-| `hard_stop_ticks` | 8 | 4 – 20 | beyond the far VA boundary |
+| **`hard_stop_ticks`** | **8** | 4 – 20 | Beyond the far VA boundary. **A FREE PARAMETER with no justification (§b.10)** — no argument exists here or in the source for 8 rather than 5 or 12. It is the constant in `risk_R = (VAH − VAL) + hard_stop_ticks`, so it sets what fraction of `risk_R` is *not* the profile (18% on the negative control). **Swept over {4, 8, 12, 16, 20} and reported on every Layer 1 result; never tuned.** A Layer 1 that only looks stable at a wide hard stop is the hard stop hiding §b.9. |
 | `exit_regime` | `close_plus_hard` | {`close_only`, `close_plus_hard`, `hard_only`} | |
 | `poc_stability_gate_ticks` | 4 | 2 – 8 | median; a gate, not a knob |
 
@@ -1161,8 +1694,11 @@ PRIMARY CONFIGURATION  (id: "P0")
     entry_variant          = E1
     exit_regime            = close_plus_hard
     profile_source         = volume_uniform
-    bin_size_pts           = 1.0
+    bin_width_rule         = median_ib_bar_range   (sec b.2, RELATIVE)
+    bin_width_mult         = 1.0
+    bin_width_floor_ticks  = 1
     va_pct                 = 0.70
+    hard_stop_ticks        = 8                     (swept, never tuned -- sec b.10)
 ```
 
 > **All kill criteria in this project apply to P0 (and P1) alone.**
@@ -1205,7 +1741,38 @@ argmax of a grid is not.
    reported as a full table plus `grid_robustness`, never as a best case.
 ```
 
-### g.1 The 15 / 60-minute IB check — CONFIRMED, once, at the end
+### g.1 The pre-registered primaries, and the checks that run once at the end
+
+#### The register
+
+Two parameters are pre-registered **blind** — fixed before the data that would
+decide them was ever loaded — and this is the register of record for both:
+
+```
+ib_minutes       = 30                     pre-registered primary
+                                          15 and 60 are run ONCE, at the end
+
+bin_width_rule   = median_ib_bar_range    pre-registered primary (sec b.2)
+bin_width_mult   = 1.0                    registered BLIND, before any real bar
+                                          0.5 and 2.0 are a labelled sensitivity
+
+sec b.9 MULTIPLIER RESOLUTION RULE        registered BLIND (sec b.9)
+  MATERIAL at ANY of {0.5, 1.0, 2.0} -> the resolved verdict is MATERIAL
+  a PASS requires "not material" at ALL THREE.  No other combination passes.
+  The neighbours VETO only; they never rescue, and the primary is never moved.
+```
+
+`bin_width` is registered here for the same reason `ib_minutes` is: it is the lever
+that decides whether the §b.9 gate passes, so choosing it after seeing real data
+would be selection on the gate's own outcome. It is a **rule**, not a number of
+points, because a number of points is not the same object at both ends of a sample
+that spans a 5× move in the index (§b.2).
+
+Run §b.9 **once**, at that rule, over all three multipliers, and resolve the verdict
+by the rule registered above. Any other bin width is a labelled sensitivity, never the
+primary, and the primary is never moved onto a sensitivity row.
+
+#### The 15 / 60-minute IB check — CONFIRMED, once, at the end
 
 **Confirmed as you specified.** Written as a binding protocol rule:
 
@@ -1226,7 +1793,9 @@ You caught a direct conflict: §g.1 sealed the newest 20%, while Step 2 walk-for
 by year and predicts year k+1. Both wanted the recent years. Resolution:
 
 ```
-BACKWARD_HOLDOUT  2010-2014          SEALED. Not touched by Steps 1-5.
+BACKWARD_HOLDOUT  2010-07-01 .. 2014-12-31   SEALED. Not touched by Steps 1-5.
+                  Starts in JULY because GLBX.MDP3 coverage begins 2010-06-06
+                  and 2010-07-01 is the first clean month boundary (sec 0.2.3).
 DEVELOPMENT       2015 .. ~2024-05   ALL walk-forward happens INSIDE this window.
 FORWARD_HOLDOUT   ~2024-05 .. now    SEALED. Not touched by Steps 1-5.
 ```
@@ -1321,12 +1890,58 @@ history. All rates marked **[MEASURE]** are replaced by real numbers after Step 
 |---|---|---|---|
 | Calendar trading days, 2015 → ~2024-05 | — | ~2,390 | ~9.4 years |
 | minus holidays / half-days | ~98% | **~2,345 = `S_all`** | |
-| minus `min_ib_range_atr` filter | ~95% [MEASURE] | **~2,228** | new filter, §f |
-| **Breakout fires by 11:30** (IB30, close-through) | **~80% [MEASURE]** (plausible 70–90%) | **~1,782 = `S_breakout`** | The 90-minute post-IB window is the binding constraint. |
-| **Retrace touches the reload zone** in time | **~50% [MEASURE]** (plausible 35–65%) | **~891 = `S_filled`** | The zone is **inside** the IB (§b.1), so this needs a deep retrace. Most uncertain number here. |
-| Layer 2 confirmation fires | ~50% [MEASURE] | ~446 | Not measurable without tick data. |
+| **IB breaks by 11:30** (IB30, close-through), filters ignored | **~82% [MEASURE]** | **~1,923 = `S_ib_broke`** | The **physical** event. This is the denominator §b.9 uses. |
+| minus the §f no-trade filters | ~95% [MEASURE] | **~1,827 = `S_breakout`** | `min_ib_range_atr`, then `min_ib_range_ticks`. |
+| **Retrace touches the reload zone** in time | **~50% [MEASURE]** (plausible 35–65%) | **~914 = `S_filled`** | The zone is **inside** the IB (§b.1), so this needs a deep retrace. Most uncertain number here. |
+| Layer 2 confirmation fires | ~50% [MEASURE] | ~457 | Not measurable without tick data. |
 
 Sealed and untouched: `BACKWARD_HOLDOUT` ~1,255 sessions, `FORWARD_HOLDOUT` ~585.
+
+#### `S_ib_broke` and `S_breakout` are DIFFERENT numbers — the stage that was missing
+
+The funnel previously went `S_all → S_breakout → S_filled`, with the §f filter
+folded into a row above the breakout. That hid a real discrepancy: §b.9 reported
+**604** breakout sessions while the funnel chart reported **581**, and there was
+nothing on the page to explain the 23.
+
+Both were right. They count different things:
+
+```
+S_ib_broke   find_breakout() fires and is unambiguous. The no-trade filters are
+             NOT applied. This is what b9_sensitivity() iterates -- it needs the
+             IB profile of every session that produced a breakout, filtered or not.
+
+S_breakout   the same event, MINUS the sessions run_strategy() had already
+             skipped. run_strategy() applies min_ib_range_atr and
+             min_ib_range_ticks at IB close, BEFORE it ever calls find_breakout,
+             so a session can break its IB and never become a trade.
+```
+
+Measured on the negative control, under the §b.2 relative bin width:
+`624 → 604 → 581 → 411`, and all **23** removed sessions are `min_ib_range_atr`. It
+reconciles exactly. (`S_filled` was 360 under the old fixed 1.0-point bin; the first
+three stages are Layer 0 only and did not move.)
+
+**That 360 → 411 move is the §b.10 worked example, and it is a rule here too.** The
+final stage is the only one that touches the profile, and it moved by 51 sessions —
+14% — on identical sessions, from a bin-width change alone. So `S_filled` is
+**assumption-conditional** and `S_ib_broke` is not. The two are never used
+interchangeably, a funnel is never quoted without the bin-width rule that produced
+it, and "the sample is large enough" is not an argument at the `S_filled` stage.
+
+**Rules, binding.**
+1. Chart 3 shows **four** bars, `S_all → S_ib_broke → S_breakout → S_filled`, and
+   names the filter responsible for every session lost between stages two and three.
+2. The reconciliation is **asserted**, not eyeballed: the per-`skip_reason` counts
+   must sum to `S_ib_broke - S_breakout`. A mismatch prints `DOES NOT RECONCILE` and
+   is treated as a bug, not a rounding note.
+3. `S_breakout` remains the denominator for every Layer 0 and Layer 1 rate.
+   `S_ib_broke` is the denominator for §b.9 and for nothing else. Neither number may
+   be quoted without saying which one it is.
+4. The illustrative Layer 1 resolver currently ignores the §f filters, so its
+   `S_filled` belongs under `S_ib_broke`, not under `S_breakout`. **Step 3 must apply
+   the same filters to both layers**, or the Layer 0 vs Layer 1 comparison is run on
+   two different samples.
 
 #### A number to re-check on real bars: the breakout rate
 

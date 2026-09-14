@@ -130,7 +130,12 @@ def main() -> int:
                   open_next, 50.0)]
         rows += [(100, 101, 99, 100, 50.0)] * 3
         s = mk_session(rows, ib_high=105.0, ib_low=95.0, ib_close_idx=3)
-        return ch.illustrate_layer1_trade(s, cfg)
+        # bin_size is PINNED at 1.0 here. These IB bars span 10 points each, so the
+        # sec b.2 relative rule would give a 10-point bin -- a single bin, and a
+        # degenerate profile. This test is about the EXIT TAXONOMY, not about bin
+        # width, so the geometry it was hand-worked against is fixed explicitly.
+        # sec b.2 bin-width behaviour is tested in tests/test_controls.py instead.
+        return ch.illustrate_layer1_trade(s, cfg, bin_size=1.0)
 
     r = resolve_session(after_close=105.0, open_next=105.0)
     check("end to end: close beyond VAH, next open INSIDE the hard stop "

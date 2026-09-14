@@ -86,6 +86,27 @@ HOW I WANT YOU TO WORK
 7. Ask me for missing inputs rather than inventing assumptions.
 8. Simple and robust over clever. Every parameter must earn its place.
 
+DESTRUCTIVE OPS ON PATHS YOU DID NOT CREATE
+Never delete or overwrite a file you did not create in this session without
+backing it up first. If a test needs a fixture at a real path (.env, config
+files, data files), move any existing file to <name>.bak first, restore it
+after, and say what you did — both the backup and the restore, in the reply,
+not silently.
+
+This applies to the whole path, not just the interesting ones: .env, anything
+in data/, output/, docs/, and any file the editor may be holding open.
+
+Check before you write. "It didn't exist a few minutes ago" is not a check —
+state can change between turns, including from the user's own editor.
+
+The rule is about the near miss, not the damage. This session's .env deletion
+is the example: a fixture was written to a real path and then removed, and it
+was harmless only because the real file hadn't been created yet. Nothing in
+the procedure made it safe — the timing did. A backup would have made the
+outcome independent of the timing, which is the point.
+
+If a backup is impossible, stop and ask instead of proceeding.
+
 WHAT I DON'T WANT
 - Guru framing, motivational trading talk, or claims of guaranteed edge.
 - Parameter sweeps presented as discoveries.

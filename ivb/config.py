@@ -65,6 +65,16 @@ class Config:
     n_shuffles: int = 1_000
     seed: int = 20260101
 
+    # ---- Layer 1 profile geometry (sec b.2) ----------------------------------
+    # Bin width is RELATIVE and pre-registered blind (sec b.2 / g.1). `bin_size_pts`
+    # is not a parameter any more; the rule is. An explicit float override is a
+    # labelled sensitivity only (sec g.0.1).
+    bin_width_rule: str = "median_ib_bar_range"
+    bin_width_mult: float = 1.0          # PRIMARY. {0.5, 1.0, 2.0} = sensitivity.
+    bin_width_floor_ticks: int = 1
+    va_pct: float = 0.70
+    hard_stop_ticks: int = 8             # sec b.10: FREE PARAMETER, swept, never tuned
+
     # ---- Gates ---------------------------------------------------------------
     ambiguous_bar_gate: float = 0.15
 
@@ -96,6 +106,13 @@ P0 = Config()
 GRID_R_MULTS = (1.0, 1.5, 2.0, 3.0)
 GRID_STOPS = ("opposite_ib_extreme", "k_ib_range")
 GRID_TRIGGERS = ("close_through", "trade_through")
+
+# Layer 1 sensitivity axes (sec g.0.1). Reported as tables. NEVER optimised over,
+# and the primary is always the first-listed / default value.
+GRID_BIN_WIDTH_MULTS = (0.5, 1.0, 2.0)
+# sec b.10: hard_stop_ticks has no justification beyond "a stop must exist", so its
+# whole sec (f) range is swept and reported. It is not tuned; P1 stays at 8.
+GRID_HARD_STOP_TICKS = (4, 8, 12, 16, 20)
 
 
 def sensitivity_grid() -> list[Config]:

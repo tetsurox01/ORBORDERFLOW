@@ -7,17 +7,80 @@ is computed from per-contract volume, which a continuous series does not expose.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pandas as pd
 
 from .config import DATA
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ENV_FILE = REPO_ROOT / ".env"
+
 DATASET = "GLBX.MDP3"
 SCHEMA = "ohlcv-1m"
 PARENT = "NQ.FUT"
 RAW_DIR = DATA / "raw"
 ET = "America/New_York"
+
+
+def assert_env_not_tracked() -> None:
+    """Refuse to run if .env is tracked by git. THE REPO IS PUBLIC.
+
+    A committed key is a published key. Deleting the file in a later commit does
+    NOT help: git history keeps the blob, and anyone who cloned or forked already
+    has it. The only real remedy is rotating the key at the vendor, so this fails
+    loudly and early rather than letting a pull proceed and look fine.
+
+    Checked with `git ls-files --error-unmatch`, which asks "is this path in the
+    INDEX" -- the exact question. Searching `git log` instead would miss a key that
+    is staged but not yet committed, which is the moment it is still cheap to fix.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", ".env"],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return  # no git available -- not a reason to block a download
+    if r.returncode != 0:
+        return  # not tracked: the normal, correct state
+
+    raise RuntimeError(
+        "\n".join([
+            "SECURITY STOP: .env is TRACKED BY GIT and this repo is PUBLIC.",
+            "",
+            "Treat the key as already published. Do this, in order:",
+            "  1. ROTATE the key at Databento NOW and revoke the old one.",
+            "     Everything below is cleanup; this step is the actual fix.",
+            "  2. git rm --cached .env",
+            "  3. confirm .gitignore contains  .env",
+            "  4. commit the removal",
+            "",
+            "Removing the file does NOT unpublish the key. Git history keeps the",
+            "blob, and any existing clone, fork or CI cache still has it. Rotation",
+            "is the only remedy. Purging history (git filter-repo / BFG) is",
+            "housekeeping, not a fix, and never a substitute for step 1.",
+        ])
+    )
+
+
+def _load_env() -> None:
+    """Read .env from the repo root, WITHOUT overriding the real environment.
+
+    override=False is the important half: a variable already exported in the shell
+    wins over the file. That stops a stale .env from silently shadowing a key a
+    caller deliberately set for one run.
+
+    IVB_CONFIRM_SPEND is deliberately not sourced here -- see download().
+    """
+    assert_env_not_tracked()
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return  # pip install python-dotenv; a real env var still works without it
+    if ENV_FILE.exists():
+        load_dotenv(ENV_FILE, override=False)
 
 
 def download(start: str, end: str, *, out_dir: Path = RAW_DIR, force: bool = False) -> Path:
@@ -37,10 +100,12 @@ def download(start: str, end: str, *, out_dir: Path = RAW_DIR, force: bool = Fal
     except ImportError as e:
         raise ImportError("pip install databento") from e
 
+    _load_env()
     key = os.environ.get("DATABENTO_API_KEY")
     if not key:
         raise RuntimeError(
             "DATABENTO_API_KEY not set.\n"
+            "Either copy .env.example to .env and fill it in, or:\n"
             "PowerShell:  $env:DATABENTO_API_KEY = 'db-...'"
         )
 
@@ -55,10 +120,16 @@ def download(start: str, end: str, *, out_dir: Path = RAW_DIR, force: bool = Fal
         schema=SCHEMA, start=start, end=end,
     )
     print(f"[data] {start} -> {end}: ${cost:.2f}, {size / 1e9:.2f} GB billable")
+    # IVB_CONFIRM_SPEND is read from the ENVIRONMENT ONLY, never from .env.
+    # _load_env() does not source it and .env.example does not list it. A
+    # purchase is a per-run decision; a config file that can pre-authorise a
+    # spend turns it into a default, and a default is what must not exist here.
     if os.environ.get("IVB_CONFIRM_SPEND") != "yes":
         raise SystemExit(
             "Refusing to spend money without confirmation.\n"
-            "Review the cost above, then:  $env:IVB_CONFIRM_SPEND = 'yes'"
+            "Review the cost above, then, for THIS RUN ONLY:\n"
+            "  $env:IVB_CONFIRM_SPEND = 'yes'\n"
+            "Do NOT put it in .env -- it is a decision, not configuration."
         )
 
     store = client.timeseries.get_range(

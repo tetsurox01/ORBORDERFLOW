@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .config import OUT, Config
+from .provenance import assert_reportable, classify
 from .stats import ambiguous_rate, metrics
 
 
@@ -89,6 +90,11 @@ def funnel(df: pd.DataFrame) -> dict:
 
 
 def write_step1(df: pd.DataFrame, cfg: Config, extras: dict) -> str:
+    # sec b.11 QUARANTINE -- second line of defence. scripts/03 refuses first; this
+    # catches any other caller that reaches the artifact writer with a source path.
+    src = extras.get("source")
+    if src:
+        assert_reportable(classify(src), "step1_report")
     OUT.mkdir(parents=True, exist_ok=True)
     m = metrics(df, s_all=len(df))
     amb = ambiguous_rate(df)

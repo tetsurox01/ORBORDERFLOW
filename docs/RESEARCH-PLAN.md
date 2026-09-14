@@ -373,11 +373,21 @@ close as a conservative bound.
 
 Run, in this order, and report all three **before** any Layer 1 PnL exists:
 
-1. **POC stability across bin size** (`IVB-SPEC.md` §b.4).
+1. **POC stability across bin width** (`IVB-SPEC.md` §b.4) — across
+   `bin_width_mult` in {0.5, 1.0, 2.0}, i.e. half, one and two times the session's
+   own median IB bar range. Bin width is **relative**, not a number of points, and
+   the rule was pre-registered blind (§b.2 / §g.1).
 2. **Profile method sensitivity** (`IVB-SPEC.md` §b.9) — the decisive one. It
    measures how far **VAH** (the entry) and **VAL** (the stop) move across the four
-   allocation methods, against thresholds fixed in advance.
+   allocation methods, against thresholds fixed in advance. Run **once**, at the
+   pre-registered rule. Report it next to the 0.5× and 2.0× rows: the primary makes
+   the median bar span ~1 bin by construction, which is the condition that forces
+   the methods to agree, so a lone `not material` at 1.0× is weak evidence (§b.2).
 3. **TPO control** (§b.5) — the assumption-free comparison.
+
+Note the coupling while reading the §b.9 output: `risk_R = (VAH − VAL) +
+hard_stop_ticks` exactly, so `d_risk` **is** the instability in every R multiple. The
+hard stop adds a constant and damps nothing (§b.10).
 
 **If §b.9 returns MATERIAL, Layer 1 is downgraded to Layer 2 status:** not testable
 with current data, results labelled `ASSUMPTION-SENSITIVE` only, and not usable as
