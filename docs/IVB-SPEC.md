@@ -498,8 +498,31 @@ For a long, the retracement arrives from above, so price touches **VAH** first a
 
 Fill model for limit orders on 1-minute bars: filled if `low(t) <= limit` (long).
 This is **optimistic** — it assumes a front-of-queue position. Record
-`touch_only_fills` (fills where the bar's low exactly equalled the limit); report
-them separately and re-run with `require_penetration_ticks = 1`.
+`touch_only_fills` (fills where the bar's low exactly equalled the limit) and
+**report that fraction with every Layer 1 result**, not only on request.
+
+#### Which fill model is PRIMARY — decided by the measured fraction, in advance
+
+```
+touch_only_fills / total_fills <= 30%   front-of-queue stays PRIMARY;
+                                        require_penetration_ticks = 1 is the
+                                        sensitivity check.
+
+touch_only_fills / total_fills  > 30%   require_penetration_ticks = 1 becomes
+                                        PRIMARY; front-of-queue drops to the
+                                        sensitivity check.
+```
+
+The reasoning: below 30% the optimistic assumption is decorating a minority of
+trades and the headline barely moves. Above 30% the strategy's results are
+substantially a claim about queue position — an unmodelled, unverifiable, and
+almost certainly flattering one — and the conservative model has to carry the
+headline instead. The threshold is fixed here, before the fraction is known, so it
+cannot be renegotiated after the fact.
+
+Measured on the synthetic preview: **21.4% of fills** (77 / 360). Below the
+threshold, so front-of-queue stays primary — but this is random-walk data and the
+number must be re-measured on real NQ bars before it decides anything.
 
 ### b.8 Retracement time limit
 
@@ -531,38 +554,72 @@ M3  volume_close_only   all bar volume assigned to the close bin
 M4  tpo_minute          bar COUNT per bin; ignores volume entirely (control)
 ```
 
-#### What is measured, per session
+#### What is measured, per session — and over the WHOLE partition
 
-For every session, compute `POC`, `VAH`, `VAL` and the zone under all four methods,
-then record the **spread** (max − min across methods) in ticks:
+For every session in DEVELOPMENT that produces a breakout, compute `POC`, `VAH`,
+`VAL` and the zone under all four methods, then record the **spread**
+(max − min across methods) in ticks:
 
 ```
 d_POC   = spread of POC location, ticks
 d_VAH   = spread of VAH location, ticks      # the ENTRY boundary
-d_VAL   = spread of VAL location, ticks      # the STOP boundary
+d_VAL   = spread of VAL location, ticks      # the far VA boundary
 d_zone  = spread of zone WIDTH (VAH - POC for a long), ticks
-d_risk  = spread of implied risk_R = (VAH - VAL), ticks
+d_risk  = spread of implied risk_to_hard_stop, ticks
+          = spread of (VAH - VAL), since the +/- hard_stop_ticks constant cancels
 ```
 
-Report the full distribution of each — median, 75th, 90th percentile — not a mean.
+Report **p50, p90 and max** of each, over the whole partition. One session is an
+anecdote and must never be quoted as the result of this gate. The per-session
+picture (Chart 2) exists to show the *mechanism*; the distribution decides.
+
+Also compute, for each method, the **E1 fill rate** — the fraction of breakout
+sessions where that method's near VA edge is touched inside `reload_timeout` — and:
+
+```
+d_fill_rate = max - min of the four fill rates, in percentage points
+```
 
 #### "Material" defined numerically, not by eye
 
-The thresholds are tied to the quantities the shift actually corrupts:
+**The gate is keyed on `risk_R` and on the fill rate, not on stop movement.** The
+earlier version of this section keyed the primary trigger on `median(d_VAL)`, on the
+reasoning that "VAL is the stop". Under the tradeable exit regime it is not: the
+stop is `VAL - hard_stop_ticks` (§c.1), `risk_R` is measured to that hard stop
+(§c.2), and the close-beyond-VAL rule cannot shrink `risk_R` at all (§b.10). So VAL
+reaches `risk_R` only through `d_risk`, which already contains it.
+
+Keying on `d_VAL` also *misses the case that actually occurs*. The first run of this
+test returned `d_VAL = 0`, `d_POC = 0`, `d_VAH = 8 ticks`: the far boundary and the
+POC stood still and the **entry** moved by two points. A `d_VAL`-keyed gate scores
+that as clean. It is not clean — it changes the entry price, and therefore `risk_R`,
+the fill rate, and which sessions get traded at all.
 
 ```
 MATERIAL if ANY of the following holds:
 
-  median(d_VAL)   > 0.20 * median(risk_R)      # stop moves >20% of the risk
-  median(d_risk)  > 0.20 * median(risk_R)      # R multiples are assumption-driven
-  median(d_zone)  > 0.30 * median(zone_width)  # fill rate is assumption-driven
-  median(d_POC)   > 4 ticks                    # the §b.4 stability gate
-  fill_rate spread across M1..M4 > 10 percentage points
+  p50(d_risk)   > 0.20 * median(risk_to_hard_stop)   # R multiples are assumption-driven
+  p90(d_risk)   > 0.40 * median(risk_to_hard_stop)   # the tail, not just the centre
+  d_fill_rate   > 10 percentage points               # a different set of trades
+  p50(d_POC)    > 4 ticks                            # the §b.4 stability gate
 ```
 
-The `d_VAL` threshold is the important one. VAL is the stop. If the stop location
-is 20% assumption, then the headline R:R claim in §c.3 is 20% assumption, and the
-"1:2 to 1:2.5" number is not a measurement.
+#### The gate is decided on REAL bars only
+
+This test reads volume, so it can only be *decided* on real NQ bars. A synthetic
+generator that draws bar volume independently of price — which the one in
+`tests/make_synthetic.py` does, `rng.integers(200, 2000)` — leaves no volume
+structure for a profile to find. `POC` is then a random draw, the four methods
+disagree freely, and the gate trips every time. Running it on synthetic data is a
+useful check that the gate *fires*; its verdict is not admissible.
+
+`d_VAL`, `d_VAH` and `d_zone` are still **reported** — they say *where* the movement
+came from, which is what gets diagnosed if the gate trips — but they are not
+triggers on their own.
+
+The `d_risk` threshold is the important one. If `risk_R` is 20% assumption, then the
+headline R:R claim in §c.3 is 20% assumption, and the "1:2 to 1:2.5" number is not a
+measurement.
 
 #### Consequence of a MATERIAL result — written in advance
 
@@ -580,6 +637,64 @@ If the boundary test passes, still run the full Layer 1 backtest under M1–M4 a
 report four PnL columns side by side. If M1 is profitable and M2/M3 are not, the
 edge belongs to the allocation assumption, not to the market. M4 (TPO) is the
 strongest control, since it uses no volume at all.
+
+---
+
+### b.10 Where Layer 1's advantage actually comes from — the ENTRY, not the stop
+
+The source frames Layer 1's benefit as a **tighter stop**: trade from the value
+area instead of the range extreme, so the distance to invalidation shrinks and the
+same target becomes 1:2 or 1:2.5 instead of 1:1. That framing does not survive
+contact with §c.1 and §c.2, and the correction matters because it changes what has
+to be measured.
+
+**Under the tradeable exit regime, the close-beyond-VAL rule cannot reduce
+`risk_R`. Not by one tick.** §c.1 requires a hard stop behind the far VA boundary
+and §c.2 requires `risk_R` to be measured to *the stop actually used*. So:
+
+```
+risk_R = |entry - hard_stop| = |entry - far_VA_edge| + hard_stop_ticks
+```
+
+is fixed the moment the limit fills. The close-based rule fires **later, or not at
+all**, and its only effect is to realise a loss **smaller** than the full `risk_R`
+by exiting early. It shortens losses; it does not shrink the denominator. Any
+statement of the form "the VA stop gives us 1:2" is quoting a distance the strategy
+does not actually risk.
+
+**The real reduction is in the entry price.** Worked from a live example:
+
+```
+                         Layer 0                 Layer 1 (E1)
+entry             IB_high + buffer, next        VAH, resting limit
+                  bar open      = 4719.25       = 4714.00
+stop              opposite IB extreme           VAL - 8 ticks
+                                = 4705.25                = 4705.00
+risk_R                         ~14.00 pt                  9.00 pt
+```
+
+Both stops sit in essentially the same place — 4705.25 against 4705.00, one tick
+apart. The entire ~5-point risk reduction is the entry: **4714.00 instead of
+4719.25.** Layer 1 is a *better-price* rule wearing a *tighter-stop* costume.
+
+Three consequences, all binding:
+
+1. **Report two risk numbers on every Layer 1 trade, always:**
+   `risk_to_hard_stop` (= `risk_R`, the only admissible denominator of an R
+   multiple) and `risk_to_VAL` (the distance the source's framing quotes). Printing
+   only the first hides the gap; printing only the second inflates every R multiple
+   downstream. The gap between them is `hard_stop_ticks` by construction, and
+   seeing it side by side is what keeps the two framings from being confused.
+2. **The §c.3 test is a test of entry price, not of stop placement.** The right
+   control is Layer 0's own entry and stop on the same sessions, which is why
+   `layer0_risk_points` is carried alongside.
+3. **The exit taxonomy must stay split** (§c, §c.1). `close_invalidation` and
+   `hard_stop` are different events: the first realises less than `risk_R`, the
+   second realises all of it. Merging them into one "stopped out" bucket destroys
+   the only evidence that the close-based rule does anything at all. The four
+   categories are closed and enumerated:
+   `{tp1, close_invalidation, hard_stop, time_stop}`, and their **frequencies are
+   reported with every Layer 1 result**, zero counts included.
 
 ---
 
@@ -627,6 +742,32 @@ Backtest three exit regimes and report all three:
 The cost of the hard stop is the honest price of tradeability. If (1) is profitable
 and (2) is not, the claimed edge does not survive contact with risk management.
 
+#### The exit taxonomy is a CLOSED enum, and its frequencies are a headline number
+
+Every Layer 1 exit is logged as exactly one of:
+
+```
+tp1                 the R-multiple target filled (limit order, no slippage)
+close_invalidation  a TF_inval CLOSE beyond the far VA edge (sec c);
+                    exit at the next 1-minute bar OPEN, market, plus slippage
+hard_stop           the resting stop at far_edge -/+ hard_stop_ticks
+time_stop           flat at trade_end (11:30 ET), market
+```
+
+No other string is permitted, and **no report may merge `close_invalidation` with
+`hard_stop`** into a combined "stopped out" bucket. Those two are the entire
+subject of §c.3: the first realises less than `risk_R`, the second realises all of
+it, and the whole claim for the close-based rule is how often the first fires
+instead of the second. Report the count of all four, zeros included, next to every
+Layer 1 result.
+
+**Hard-stop dominance.** A `close_invalidation` may be logged as such only if its
+market exit price is strictly better than the hard stop. If the next bar opens at
+or through the hard stop, the resting stop order had already filled: the fill price
+is identical either way, but the event belongs in the `hard_stop` bucket. Without
+this rule a gap-through quietly moves a full-`risk_R` loss into the
+`close_invalidation` column and flatters exactly the number §c.3 turns on.
+
 ### c.2 Risk definition for R multiples
 
 ```
@@ -636,6 +777,16 @@ risk_R = |entry_price - stop_price_actually_used|
 Use the *actual* stop, not the theoretical one. If regime 2 is live, `risk_R` uses
 `hard_stop`. Reporting R multiples off a tighter theoretical stop while trading a
 wider real one inflates every downstream number.
+
+**Two numbers, reported side by side, on every Layer 1 trade (§b.10):**
+
+```
+risk_to_hard_stop = |entry - hard_stop|      # = risk_R. The ONLY R denominator.
+risk_to_VAL       = |entry - far_VA_edge|    # what the source's framing quotes.
+```
+
+They differ by `hard_stop_ticks` exactly. Both are printed so the gap between the
+source's framing and ours is visible rather than argued about.
 
 ### c.3 The claim to test directly
 
@@ -648,6 +799,15 @@ through a smaller denominator and the *same* target. The falsifiable test:
 
 A tighter stop mechanically raises R:R **and** raises the stop-out rate. The claim
 is true only if the first effect dominates. Measure both.
+
+**Correction to the source's mechanism (§b.10).** Under the tradeable regime the
+VA-based *stop* does not move `risk_R` at all — the hard stop sits a fixed
+`hard_stop_ticks` behind the far VA edge, and `risk_R` is measured to it. The
+smaller denominator comes from the **entry price**: `VAH` instead of
+`IB_high + buffer`. So this test is a test of entry price, and the control is
+Layer 0's own entry and stop on the same sessions. The close-based rule is tested
+separately, and its only measurable effect is the `close_invalidation` share of
+exits (§c.1) and the average loss realised on those exits versus a full `risk_R`.
 
 ---
 
@@ -949,10 +1109,10 @@ across deciles, that is a Layer 3 feature, not a new filter.
 
 | Param | Default | Range | Notes |
 |---|---|---|---|
-| `tp1_hit_rate_target` | 0.675 | 0.65 – 0.70 | equals the 32.5th pct of the MFE distribution |
+| `tp1_hit_rate_target` | 0.675 | 0.65 – 0.70 | equals the 32.5th pct of the MFE distribution. **The realised hit rate is an identity and may never be reported as a result — §h.5.** |
 | `tp2_hit_rate_target` | 0.30 | 0.20 – 0.40 | the extended tail |
 | `mfe_units` | `ib_range` | {`points`, `ib_range`, `atr`, `R`} | tested for stationarity |
-| `quantile_method` | `bucket_empirical` | {`bucket_empirical`, `quantile_reg`, `gbm_quantile`} | escalate only when beaten |
+| `quantile_method` | `bucket_empirical` **and** `quantile_reg`, CO-PRIMARY | {`bucket_empirical`, `quantile_reg`, `gbm_quantile`} | Both fitted on the same folds and compared head to head (§h.3). `gbm_quantile` is the only true escalation. |
 | `min_obs_per_bucket` | 100 | 50 – 250 | |
 | `walkforward` | `by_year_expanding` | — | never shuffled |
 
@@ -1168,6 +1328,25 @@ history. All rates marked **[MEASURE]** are replaced by real numbers after Step 
 
 Sealed and untouched: `BACKWARD_HOLDOUT` ~1,255 sessions, `FORWARD_HOLDOUT` ~585.
 
+#### A number to re-check on real bars: the breakout rate
+
+The synthetic preview returns **`S_breakout` = 93.1% of `S_all`**. That is well above
+the ~80% this table assumed and above the top of its plausible band.
+
+Expect it to be high on synthetic data: a random walk has no support, no resistance
+and no participants defending a level, so it crosses a range boundary far more
+readily than real price does. The synthetic number is therefore not evidence of a
+bug and not evidence of an edge — it is close to what a driftless random walk should
+produce over a 90-minute window against a 30-minute range.
+
+**The decision rule, fixed now.** Re-measure on real NQ bars. If `S_breakout` is
+still **above ~90%** there, then `breakout_buffer_ticks = 1` is not filtering
+anything and "the IB broke" is not a selective event — nearly every session is a
+signal, so Layer 0 has no directional filter and is closer to a coin flip on the
+first move than to a breakout system. In that case raise `breakout_buffer_ticks`
+through its declared range and report the funnel at each value, as a **reported
+sensitivity, not an optimisation** (§g.0.1) — the primary stays at 1.
+
 ### h.2 Bucket boundaries — expanding terciles, not hard-coded cuts
 
 The hard-coded cuts (`<0.5 / 0.5-1.0 / >1.0`) had two faults: they produce badly
@@ -1220,6 +1399,28 @@ division* problem, and that is the binding constraint.
 > `brk_delay` is added only if the 6-cell model demonstrably beats the unconditional
 > control out of sample and cell counts still clear the threshold.
 
+**The 6-cell design is thin, not dead.** ~35 observations per cell per test fold is
+enough to see a 32.5th percentile, badly. It is not enough to see it precisely, and
+the mandatory confidence intervals (§h.4, item 5) will say so. That is the reason for the next
+paragraph.
+
+**`quantile_reg` runs as a CO-PRIMARY, not as an escalation.** The parameter table
+in §(f) says "escalate only when beaten", which sets up the wrong test: it would
+mean fitting buckets, watching them fail on thin cells, and only then trying a
+method that does not chop the sample into cells at all. Quantile regression pools
+every session and spends its degrees of freedom on coefficients rather than on cell
+boundaries, so it is the natural answer to *this specific* sample-size problem, not
+a fallback from it. Both are fitted on the same folds and compared head to head on
+out-of-sample expectancy (§h.5). `gbm_quantile` stays a true escalation — it is only
+reached if both co-primaries beat the unconditional control and there is reason to
+think the relationship is non-linear.
+
+**Scaling note for any preview run.** Cell counts computed on a short or synthetic
+sample must be scaled to the real primary sample before a design is judged. The
+DEVELOPMENT partition is ~2,900 sessions; a 624-session synthetic preview is ~2.5
+years, about **4.6×** smaller. Multiply before concluding. The 18-cell design fails
+either way, which is why §h.3's conclusion does not depend on the scaling.
+
 This is exactly the kind of thing worth knowing before writing the code rather than
 after fitting a model to 12 points.
 
@@ -1241,6 +1442,60 @@ after fitting a model to 12 points.
 5. Confidence intervals are mandatory on every quantile estimate — bootstrap, and
    report the interval width next to the point estimate. A TP1 of "42 points
    (95% CI: 28–61)" is an honest answer. "42 points" alone is not.
+
+---
+
+### h.5 HIT RATE IS NOT A RESULT — the admissible metrics for Layer 3
+
+**Rule, binding, no exceptions: the TP1 hit rate may never be reported as a result
+for Layer 3.**
+
+TP1 is *defined* as the `(1 - tp1_hit_rate_target)`-th percentile of the MFE
+distribution — the 32.5th percentile for the default 0.675. A quantile is hit
+`100 - pct` percent of the time **in every distribution that exists**: a real market,
+a random walk, a pile of uniform noise. "MFE ≥ TP1 in 68% of trades" is therefore an
+identity, arithmetic restated, and it carries exactly zero information about whether
+the strategy works.
+
+This is not hypothetical. The first run of the MFE chart printed "MFE ≥ TP1 in
+68.0%" on **synthetic random-walk bars with no edge by construction**. The number
+was correct and completely empty. Anything that can print 68% on noise cannot be
+evidence.
+
+It is also the exact shape of the source's central claim — a "protection level"
+with a "65–70% hit rate". That claim is unfalsifiable as stated, and reproducing the
+number would prove nothing. Reproduce the *mechanism*, never the headline.
+
+#### Admissible metrics — the complete list
+
+Layer 3 is judged on **expectancy net of costs per breakout session**, and on
+nothing else:
+
+```
+E[net PnL per session in $], costs included, no_fill sessions carried as zero
+```
+
+benchmarked against **fixed R multiples** as the control arm:
+
+```
+control: TP at a fixed 1.0R / 1.5R / 2.0R / 3.0R, same entries, same stops
+test:    TP at the conditional MFE quantile
+verdict: the conditional target must beat the BEST fixed-R control out of sample,
+         on a PAIRED block bootstrap (sec i.2), or the conditional "protection
+         level" is not established.
+```
+
+Supporting numbers that may accompany it: profit factor, max drawdown, the full
+MAE/MFE distributions, and the per-fold cell counts (§h.4). Every one of these is
+reported with a confidence interval (§i).
+
+#### Where the hit rate may still appear
+
+Only as a **diagnostic, explicitly labelled by construction**, to confirm the
+quantile estimator is calibrated — i.e. that the realised rate on *held-out* data
+matches the targeted rate. Calibration drift is a real signal. The level itself is
+not. Any chart or table showing it carries the words "by construction" next to the
+figure.
 
 ---
 

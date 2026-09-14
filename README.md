@@ -46,6 +46,7 @@ Exit code 0 means the kill criteria passed. Exit code 1 means stop.
 ```powershell
 python tests/test_backtest.py          # 9 synthetic tests of the intrabar rule
 python tests/test_profile.py           # 13 hand-built volume profile tests
+python tests/test_exits.py             # 17 exit-taxonomy tests (sec c / c.1)
 python tests/make_synthetic.py         # fake NQ-shaped bars, random walk
 python scripts/00_verify_timestamps.py data/raw/synthetic.parquet
 python scripts/02_build_rolls.py       data/raw/synthetic.parquet
@@ -70,6 +71,9 @@ in random data has a bug. This is the plumbing check.
 | Roll adjustment audit | `ivb/rolls.py` | Raises if any adjusted day moves more than 8× ATR14 |
 | Databento spend | `ivb/data.py` | Refuses to download without `IVB_CONFIRM_SPEND=yes` |
 | `S_all` denominator | `ivb/backtest.py` | Non-breakout days are emitted as zero-PnL rows, never dropped |
+| Exit taxonomy is a closed enum | `ivb/exits.py` | `validate` raises on any string outside `{tp1, close_invalidation, hard_stop, time_stop}` |
+| `close_invalidation` never absorbs a hard stop | `ivb/exits.py` | An invalidation exit at or through the hard stop is reclassified as `hard_stop` (§c.1 dominance) |
+| Hit rate is not a Layer 3 result | §h.5 + `src/viz.py` | The MFE chart prints the rate labelled **by construction**; expectancy net of costs is the only admissible metric |
 
 ---
 
@@ -82,15 +86,22 @@ in random data has a bug. This is the plumbing check.
 |---|---|
 | `01_a_textbook_long.png` | Break up, retrace to VAH, fill, TP1 |
 | `01_b_no_fill.png` | Break, no retrace — Layer 1 sits out, Layer 0 keeps the move |
-| `01_c_stopped_out.png` | Filled, then a 5-minute close beyond the far VA edge |
+| `01_c_stopped_out.png` | Filled, then a 5-minute close beyond the far VA edge (`close_invalidation`) |
 | `01_d_textbook_short.png` | The mirror of (a) |
-| `02_profile_methods.png` | §b.9 — the same session under M1–M4 allocation |
-| `03_funnel.png` | §h.1 — S_all → S_breakout → S_filled |
+| `02_profile_methods.png` | §b.9 — one session under M1–M4, plus the full-sample gate (p50/p90/max of `d_risk`, `d_fill_rate`) |
+| `03_funnel.png` | §h.1 — S_all → S_breakout → S_filled, exit-reason frequencies, touch-only fill rate |
 | `04_mfe_tp1.png` | MFE before stop, TP1 at the 32.5th percentile, bootstrap CI |
 | `05_cell_counts.png` | §h.3 — cells per Layer 3 design against `min_obs_per_bucket` |
 
 Charts 3, 4 and 5 come from `ivb.backtest.run_strategy`, the real Step 1 code, so
 they cannot drift from the backtest.
+
+`scripts/04_charts.py` also prints three diagnostics to the console that are not
+plotted: the Layer 1 exit-reason frequencies, the touch-only fill fraction against
+the 30% rule (§b.7), and the §b.9 gate computed over the whole partition. On
+synthetic data the §b.9 verdict is **not admissible** — the generator draws bar
+volume independently of price, so the profile has nothing to find and the gate
+trips by construction. It is a check that the gate fires, nothing more.
 
 **Charts 1 and 2 use `illustrate_layer1_trade` in `scripts/04_charts.py`.** Step 3
 has not been written, so that function is a plain reading of the spec with no
@@ -101,10 +112,10 @@ not results. It is deliberately kept out of `ivb/` for that reason.
 
 ```
 docs/          spec and research plan
-ivb/           config, data, timestamps, rolls, sessions, profile, backtest, controls, stats, report
+ivb/           config, data, timestamps, rolls, sessions, profile, exits, backtest, controls, stats, report
 src/           viz.py -- chart drawing only, no research logic
 scripts/       00 verify -> 01 download -> 02 rolls -> 03 step 1 -> 04 charts
-tests/         synthetic intrabar tests, profile tests, fake data generator
+tests/         synthetic intrabar tests, profile tests, exit-taxonomy tests, fake data generator
 data/          raw bars, roll_calendar.csv, partitions.json, timestamp_convention.json
 output/        step 1 reports; charts/ holds the PNGs
 ```

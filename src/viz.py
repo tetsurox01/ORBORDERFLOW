@@ -59,6 +59,17 @@ plt.rcParams.update({
 })
 
 
+def _note_frac(fig, notes) -> float:
+    """Figure fraction to reserve for a monospace notes block, 0 when there is none.
+
+    A flat 10% silently clipped long notes off the bottom of the page, which is the
+    worst possible failure mode for a caveat.
+    """
+    if not notes:
+        return 0.0
+    return (0.155 * len(notes)) / float(fig.get_figheight())
+
+
 # ----------------------------------------------------------------------------
 # primitives
 # ----------------------------------------------------------------------------
@@ -98,6 +109,12 @@ def draw_levels(ax, items, *, xtext) -> None:
 
     items: [(y, label, color, linestyle, linewidth), ...]
     The label always prints its TRUE price; only the text row moves.
+
+    Two separate collision problems, both handled here:
+      1. labels stacking on each other -- solved by the one-text-row nudge below;
+      2. a level LINE striking through its own label -- solved by an opaque plate
+         behind every label. The lines run the full width, so a transparent label
+         is always struck through, however far it is nudged.
     """
     for y, _lab, col, ls, lw in items:
         ax.axhline(y, color=col, linestyle=ls, linewidth=lw, zorder=4)
@@ -105,7 +122,7 @@ def draw_levels(ax, items, *, xtext) -> None:
     lo, hi = ax.get_ylim()
     # one text row in DATA units, so labels never overlap at any price scale
     inv = ax.transData.inverted()
-    gap = abs(inv.transform((0, 14))[1] - inv.transform((0, 0))[1])
+    gap = abs(inv.transform((0, 17))[1] - inv.transform((0, 0))[1])
     ordered = sorted(items, key=lambda t: t[0])
 
     rows, last = [], -np.inf
@@ -121,8 +138,10 @@ def draw_levels(ax, items, *, xtext) -> None:
         if abs(yy - y) > gap * 0.2:      # leader line back to the real level
             ax.plot([xtext - 0.4, xtext + 0.2], [y, yy], color=col, linewidth=0.6,
                     alpha=0.7, zorder=5)
-        ax.text(xtext + 0.3, yy, " {} {:,.2f}".format(lab, y), color=col,
-                fontsize=8, va="center", ha="left", zorder=6)
+        ax.text(xtext + 0.3, yy, "{} {:,.2f}".format(lab, y), color=col,
+                fontsize=8, va="center", ha="left", zorder=7,
+                bbox=dict(boxstyle="square,pad=0.22", facecolor="white",
+                          edgecolor="none"))
 
 
 def draw_profile(ax, profile, *, vah=None, val=None, poc=None,
@@ -160,11 +179,11 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
     """
     if profile is not None:
         fig, (axp, ax) = plt.subplots(
-            1, 2, figsize=(15.5, 9.0), sharey=True,
+            1, 2, figsize=(15.5, 10.6), sharey=True,
             gridspec_kw={"width_ratios": [1, 5.0], "wspace": 0.015})
         ax.tick_params(labelleft=False, left=False)
     else:
-        fig, ax = plt.subplots(figsize=(14, 9.0))
+        fig, ax = plt.subplots(figsize=(14, 10.6))
         axp = None
 
     draw_candles(ax, bars)
@@ -227,17 +246,21 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
 
             xi = trade.get("exit_idx")
             if xi is not None:
-                ok = trade["exit_reason"] == "target"
+                ok = trade["exit_reason"] == "tp1"
                 ax.plot([xi], [trade["exit_price"]], marker="*" if ok else "X",
                         markersize=16 if ok else 11,
                         color=C["tp1"] if ok else C["stop"], zorder=8)
                 ax.annotate("exit: " + trade["exit_reason"],
                             (xi, trade["exit_price"]), textcoords="offset points",
-                            xytext=(8, -16), fontsize=8,
-                            color=C["tp1"] if ok else C["stop"], zorder=8)
+                            xytext=(10, -20 if ok else 16), fontsize=8,
+                            color=C["tp1"] if ok else C["stop"], zorder=9,
+                            bbox=dict(boxstyle="square,pad=0.22",
+                                      facecolor="white", edgecolor="none"))
                 ax.plot([ei, xi], [trade["entry_price"], trade["exit_price"]],
                         color="#555555", linewidth=1.0, alpha=0.6, zorder=6)
 
+            r_hard = trade.get("risk_to_hard_stop", trade["risk_points"])
+            r_val = trade.get("risk_to_val", float("nan"))
             note_lines += [
                 "direction      {}".format("LONG" if d == 1 else "SHORT"),
                 "entry          {:,.2f}   (limit at {})".format(
@@ -247,9 +270,29 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
                     "VAL" if d == 1 else "VAH"),
                 "hard stop      {:,.2f}   (sec c.1, whichever fires first)".format(
                     trade["stop_price"]),
-                "risk_R         {:,.2f} pt  ({:,.0f} ticks)   measured to the "
-                "HARD stop (sec c.2)".format(
-                    trade["risk_points"], trade["risk_points"] / TICK),
+                "",
+                "risk_to_hard_stop  {:,.2f} pt  ({:,.0f} tk)   <- risk_R. The ONLY "
+                "denominator of an R multiple (sec c.2).".format(r_hard, r_hard / TICK),
+                "risk_to_VAL        {:,.2f} pt  ({:,.0f} tk)       the distance the "
+                "source's 1:2 framing quotes. Never used here.".format(
+                    r_val, r_val / TICK),
+            ]
+            if trade.get("layer0_risk_points") is not None:
+                l0 = trade["layer0_risk_points"]
+                note_lines += [
+                    "Layer 0 risk       {:,.2f} pt  ({:,.0f} tk)       entry {:,.2f} "
+                    "(break) / stop {:,.2f} (opposite IB extreme)".format(
+                        l0, l0 / TICK, trade.get("layer0_entry_price", float("nan")),
+                        trade.get("layer0_stop_price", float("nan"))),
+                    "sec b.10: Layer 1's smaller risk comes from the ENTRY PRICE "
+                    "({:,.2f} vs {:,.2f}), not from the".format(
+                        trade["entry_price"],
+                        trade.get("layer0_entry_price", float("nan"))),
+                    "               close-beyond-VAL rule. That rule cannot shrink "
+                    "risk_R at all -- it can only exit early.",
+                    "",
+                ]
+            note_lines += [
                 "TP1            {:,.2f}   ({:.2f}R)".format(
                     trade["tp1_price"], trade["tp1_r"]),
                 "achieved       {:+.2f}R  ({:+,.2f} pt net)".format(
@@ -285,7 +328,7 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
     ax.set_xlabel("time, ET (1-minute bars)")
 
     fig.subplots_adjust(left=0.055, right=0.905, top=0.895,
-                        bottom=0.05 + 0.021 * len(note_lines))
+                        bottom=0.045 + 0.0165 * len(note_lines))
 
     # levels LAST: the label nudging needs the final axes box and y limits
     draw_levels(ax, level_items, xtext=xt)
@@ -307,10 +350,13 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
 # ----------------------------------------------------------------------------
 def chart_profile_methods(profiles: dict, *, reference: str | None = None,
                           labels: dict | None = None, spreads: dict | None = None,
-                          title: str = "", subtitle: str = "") -> plt.Figure:
+                          title: str = "", subtitle: str = "",
+                          notes: list | None = None) -> plt.Figure:
     """One session, one panel per allocation method, VAH / POC / VAL on each."""
     keys = list(profiles)
-    fig, axes = plt.subplots(1, len(keys), figsize=(15.5, 7.6), sharey=True)
+    fig, axes = plt.subplots(
+        1, len(keys), figsize=(15.5, 7.6 + 0.155 * len(notes or [])),
+        sharey=True)
     axes = np.atleast_1d(axes)
 
     ref = profiles.get(reference) if reference else None
@@ -349,13 +395,19 @@ def chart_profile_methods(profiles: dict, *, reference: str | None = None,
     axes[0].set_ylabel("price (NQ index points)")
     if spreads:
         txt = "   ".join("{} = {:.0f} ticks".format(k, v) for k, v in spreads.items())
-        fig.text(0.5, 0.035, "session spread (max - min across M1-M4):  " + txt,
-                 ha="center", fontsize=9, family="monospace", color="#333333")
+        fig.text(0.012, _note_frac(fig, notes) + 0.035,
+                 "THIS session's spread (max - min across M1-M4):  " + txt,
+                 ha="left", fontsize=9, family="monospace", color="#333333")
+    if notes:
+        fig.text(0.012, 0.015, "\n".join(notes), fontsize=8.5, color="#333333",
+                 family="monospace", va="bottom",
+                 bbox=dict(boxstyle="round,pad=0.5", facecolor="#f7f9fb",
+                           edgecolor="#b8c1cc"))
 
     fig.suptitle(title, fontsize=13, y=0.975)
     if subtitle:
-        fig.text(0.5, 0.925, subtitle, fontsize=9, color="#555555", ha="center")
-    fig.tight_layout(rect=(0, 0.07, 1, 0.905))
+        fig.text(0.5, 0.930, subtitle, fontsize=9, color="#555555", ha="center")
+    fig.tight_layout(rect=(0, _note_frac(fig, notes) + 0.065, 1, 0.915))
     return fig
 
 
@@ -370,7 +422,8 @@ def chart_funnel(stages: list, *, title: str = "", subtitle: str = "",
     top = counts[0] if counts and counts[0] else 1
     y = np.arange(len(counts))[::-1]
 
-    fig, ax = plt.subplots(figsize=(12.5, 1.35 * len(counts) + 3.0))
+    fig, ax = plt.subplots(figsize=(12.5, 1.35 * len(counts) + 3.0
+                                + 0.155 * len(notes or [])))
     shades = ["#2d6cdf", "#5b8fe6", "#8bb2ee", "#b6cef5", "#d7e4fa"]
     ax.barh(y, counts, height=0.58,
             color=[shades[i % len(shades)] for i in range(len(counts))],
@@ -396,7 +449,7 @@ def chart_funnel(stages: list, *, title: str = "", subtitle: str = "",
     fig.suptitle(title, fontsize=13, y=0.98)
     if subtitle:
         fig.text(0.5, 0.925, subtitle, fontsize=9, color="#555555", ha="center")
-    fig.tight_layout(rect=(0, 0.10 if notes else 0.02, 1, 0.90))
+    fig.tight_layout(rect=(0, _note_frac(fig, notes) + 0.02, 1, 0.90))
     return fig
 
 
@@ -414,7 +467,7 @@ def chart_mfe(mfe, *, tp1: float, ci=None, pct: float = 32.5, bins: int = 60,
     m = np.asarray(mfe, float)
     m = m[np.isfinite(m)]
 
-    fig, ax = plt.subplots(figsize=(13, 7.4))
+    fig, ax = plt.subplots(figsize=(13, 7.4 + 0.155 * len(notes or [])))
     ax.hist(m, bins=bins, color="#b6cef5", edgecolor="#7fa4dd", linewidth=0.5)
 
     if ci is not None and np.isfinite(ci[0]) and np.isfinite(ci[1]):
@@ -427,17 +480,24 @@ def chart_mfe(mfe, *, tp1: float, ci=None, pct: float = 32.5, bins: int = 60,
     ax.axvline(med, color=C["poc"], linewidth=1.4, linestyle="--", zorder=4,
                label="median = {:,.2f} pt".format(med))
 
+    # sec h.5: this number is an IDENTITY, not a result. TP1 is defined as the
+    # pct-th percentile, so the "hit rate" is 100 - pct in any distribution
+    # whatsoever. Labelled so it cannot be lifted out of the picture and quoted.
     hit = 100.0 * (m >= tp1).mean() if len(m) else np.nan
     ax.text(0.985, 0.965,
-            "n = {:,}\nMFE >= TP1 in {:.1f}% of trades".format(len(m), hit),
+            "n = {:,}\nMFE >= TP1 in {:.1f}% of trades\n"
+            "^^ BY CONSTRUCTION, NOT A RESULT\n"
+            "TP1 is defined as the {:.1f}th pct, so this\n"
+            "is ~{:.1f}% in ANY distribution (sec h.5)".format(
+                len(m), hit, pct, 100 - pct),
             transform=ax.transAxes, ha="right", va="top", fontsize=9.5,
-            family="monospace",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="white",
-                      edgecolor="#b8c1cc"))
+            family="monospace", color="#8c281d",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#fdf2f0",
+                      edgecolor="#c03a2b"))
 
     ax.set_xlabel("MFE before stop (index points, pessimistic intrabar)")
     ax.set_ylabel("trades")
-    ax.legend(loc="upper right", bbox_to_anchor=(0.985, 0.86), fontsize=9)
+    ax.legend(loc="upper right", bbox_to_anchor=(0.985, 0.76), fontsize=9)
 
     if notes:
         fig.text(0.012, 0.02, "\n".join(notes), fontsize=8.5, color="#555555",
@@ -446,7 +506,7 @@ def chart_mfe(mfe, *, tp1: float, ci=None, pct: float = 32.5, bins: int = 60,
     fig.suptitle(title, fontsize=13, y=0.98)
     if subtitle:
         fig.text(0.5, 0.928, subtitle, fontsize=9, color="#555555", ha="center")
-    fig.tight_layout(rect=(0, 0.10 if notes else 0.02, 1, 0.91))
+    fig.tight_layout(rect=(0, _note_frac(fig, notes) + 0.02, 1, 0.91))
     return fig
 
 
@@ -458,8 +518,9 @@ def chart_cell_counts(counts_by_design: dict, *, min_obs: int, title: str = "",
     """One panel per bucket design. Cells under min_obs are drawn in red."""
     designs = list(counts_by_design)
     widths = [max(1, len(counts_by_design[d])) for d in designs]
-    fig, axes = plt.subplots(1, len(designs), figsize=(15.5, 7.4),
-                             gridspec_kw={"width_ratios": widths})
+    fig, axes = plt.subplots(
+        1, len(designs), figsize=(15.5, 7.4 + 0.155 * len(notes or [])),
+        gridspec_kw={"width_ratios": widths})
     axes = np.atleast_1d(axes)
 
     for ax, d in zip(axes, designs):
@@ -488,7 +549,7 @@ def chart_cell_counts(counts_by_design: dict, *, min_obs: int, title: str = "",
     fig.suptitle(title, fontsize=13, y=0.98)
     if subtitle:
         fig.text(0.5, 0.928, subtitle, fontsize=9, color="#555555", ha="center")
-    fig.tight_layout(rect=(0, 0.10 if notes else 0.02, 1, 0.91))
+    fig.tight_layout(rect=(0, _note_frac(fig, notes) + 0.02, 1, 0.91))
     return fig
 
 
