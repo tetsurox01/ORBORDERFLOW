@@ -228,6 +228,49 @@ The 80% point is computed by **session count**, not calendar date, over the
 **Both holdouts may be opened exactly once, together, at the end.** Opening either
 one early destroys its value and there is no way to restore it.
 
+#### STANDING FACT — `BACKWARD_HOLDOUT` IS UNFIT DATA, NOT MERELY SEALED
+
+Measured 2026-09-15 on the front-month series the backtest actually consumes. This
+supersedes the "~1,130 sessions, second out-of-sample check" row in the table
+above, which describes a sample that does not exist in usable form.
+
+Two independent defects. Either alone disqualifies it.
+
+**1. The front month is the wrong contract on nearly every session.** Share of
+sessions where the calendar's front month is not that day's highest-volume
+outright: **2010 100.0%, 2011 98.5%, 2012 87.0%, 2013 82.3%, 2014 72.3%** — i.e.
+every year the backward holdout covers. See §0.1.5 (defect D4). The series is
+stitched from contracts that were barely trading.
+
+**2. The bars are mostly absent anyway.** Median RTH bars per session in the
+front-month series, out of 390:
+
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | 2017+ |
+|---|---|---|---|---|---|---|---|
+| 15 | 18 | 8 | 20 | 103 | 390 | 390 | 390 |
+
+On the raw pull before the roll calendar is applied the medians are 40 / 33 / 107 /
+402 / 442, and the share of volume timestamped inside the 19:00 ET hour is
+**47.1% / 38.3% / 29.3%** for 2010–2012 against **under 5%** from 2013 onward. So
+part of the loss is genuine vendor sparsity and part is defect 1 concentrating the
+series onto dead contracts. The two compound.
+
+**Consequence, binding.** `BACKWARD_HOLDOUT` cannot answer the regime question it
+was registered for. Unsealing it would spend the holdout and return nothing, so it
+is not a reserve to be drawn on later — it is a partition that was never funded.
+It stays registered and sealed rather than deleted, because deleting it would hide
+that the plan once depended on it.
+
+Enforced in `ivb/partitions.py`: the normal unseal token is **no longer sufficient**
+for this partition. `select("BACKWARD_HOLDOUT", unseal=UNSEAL_TOKEN)` now raises
+with this finding attached; a second, longer `BACKWARD_UNFIT_TOKEN` is required to
+get the raw window at all. `FORWARD_HOLDOUT` is untouched and still opens on the
+normal token — its data is clean.
+
+**What this costs the study, stated plainly.** The research plan had two
+out-of-sample checks and now has one. Any claim of regime-independence that leaned
+on "it also holds 2010–2014" is unsupported and may not be made.
+
 ### 0.2.4 VENDOR DATA QUALITY — degraded days are EXCLUDED, never repaired
 
 The 2010-07-01 → 2026-08-31 pull emitted a `BentoWarning` naming three degraded days
@@ -428,6 +471,69 @@ it should not be doing, and that is a finding.
 **Mandatory audit before any backtest:** plot Series B's daily returns and assert
 that no single-day return exceeds `8 * ATR14`. A spike at a roll date means the
 adjustment is broken. Log the assertion result.
+
+### 0.1.5 KNOWN OPEN DEFECT D4 — the front month is sometimes not the front month
+
+Defects D1 (spreads ranked as contracts), D2 (the parser failing *upward* into a
+sentinel that outranked every real contract) and D3 (the one-digit decade wrap) are
+fixed and regression-tested in `tests/test_rolls.py`. **D4 is not fixed.** It is
+recorded here with its measured blast radius so that no later result is quoted as
+if the roll calendar were clean.
+
+**The test.** For every session, take the highest-volume *outright* (spreads
+excluded) and compare it to the calendar's `front_instrument_id`. Share of sessions
+where they disagree:
+
+| 2010 | 2011 | 2012 | 2013 | 2014 | 2015 | 2016 | 2017+ |
+|---|---|---|---|---|---|---|---|
+| 100.0% | 98.5% | 87.0% | 82.3% | 72.3% | 26.9% | 20.2% | ~1.6% |
+
+**The ~1.6% residual from 2016-06-13 onward is not D4.** It is exactly four
+sessions a year — the roll day itself, where the calendar switches one session
+after volume crosses over. That one-day lag is deliberate and is left alone.
+
+**D4 proper is two spans, both inside `DEVELOPMENT`:**
+
+```
+2015-01-28 .. 2015-06-12    28 sessions   calendar NQM5    should be NQH5    42x volume
+2015-11-04 .. 2016-06-10    88 sessions   calendar NQM6    should be NQH6   155x volume
+```
+
+NQH6 carried 8,154,675 lots in January 2016 and 6,743,461 in February. The calendar
+ran those months on NQM6, which carried 3,500 and 4,979. NQH6 never appears in the
+front-month series at all. The "only roll forward" rule then makes the error
+absorbing: once the calendar has advanced past a contract it can never come back to
+it, so a single bad promotion holds for months. That is the same failure *shape* as
+D2 — a wrong answer that cannot be displaced — arriving through a different door.
+
+**MEASURED IMPACT ON STEP 1 — it does not change the verdict.**
+
+```
+sessions of S_all inside a wrong-contract span     133 of 2,212   (6.0%)
+P0 trades inside one                               118 of 1,971   (6.0%)
+  their expectancy                                 -$4.29/trade
+  every other trade                                -$2.79/trade
+P0 as reported                                     -$2.57/session
+P0 with all 133 sessions removed                   -$2.49/session
+```
+
+The contaminated sessions are slightly *worse* than the rest, so removing them
+makes P0 marginally less bad and nowhere near positive. The date window used for
+removal is deliberately over-inclusive (the whole calendar span, not just the
+mismatched sessions), so $-2.49 is the generous end. **The §i.3 kill criteria fail
+identically either way.**
+
+**Binding rules.**
+1. This defect is disclosed with any result computed on 2015 or 2016 data.
+2. It is NOT fixed opportunistically. Fixing it rebuilds the roll calendar, the
+   adjusted series, `data/partitions.json` and every Step 1 number, and
+   `data/partitions.json` already carries "never recompute after Step 1 begins".
+   That is a decision to take deliberately, not a side effect of another task.
+3. Most of the damage never reached the backtest anyway: the wrong contracts are
+   barely traded, so `build_sessions` had already dropped most of those sessions
+   for having fewer than 10 IB bars. That is luck, not protection — the sessions
+   that *did* survive are the ones where the dead contract happened to print a
+   full day, and nothing in the pipeline was checking.
 
 ---
 
@@ -2064,16 +2170,30 @@ then re-computed for real before Step 2 begins.
 Holdouts are sealed, so the study sample is **2015 → ~2024-05**, not the full
 history. All rates marked **[MEASURE]** are replaced by real numbers after Step 1.
 
+**MEASURED 2026-09-15 on real NQ bars, `DEVELOPMENT` = 2015-01-02 → 2024-05-01,
+IB30, close-through, `breakout_buffer_ticks = 1`.** Every Layer 0 `[MEASURE]`
+placeholder below is now a real number. Only the two Layer 1 / Layer 2 rows remain
+estimates, and they are marked as such.
+
 | Stage | Rate | Sessions | Notes |
 |---|---|---|---|
-| Calendar trading days, 2015 → ~2024-05 | — | ~2,390 | ~9.4 years |
-| minus holidays / half-days | ~98% | **~2,345 = `S_all`** | |
-| **IB breaks by 11:30** (IB30, close-through), filters ignored | **~82% [MEASURE]** | **~1,923 = `S_ib_broke`** | The **physical** event. This is the denominator §b.9 uses. |
-| minus the §f no-trade filters | ~95% [MEASURE] | **~1,827 = `S_breakout`** | `min_ib_range_atr`, then `min_ib_range_ticks`. |
-| **Retrace touches the reload zone** in time | **~50% [MEASURE]** (plausible 35–65%) | **~914 = `S_filled`** | The zone is **inside** the IB (§b.1), so this needs a deep retrace. Most uncertain number here. |
-| Layer 2 confirmation fires | ~50% [MEASURE] | ~457 | Not measurable without tick data. |
+| Sessions in the `DEVELOPMENT` partition | — | **2,386** | |
+| minus sessions with no definable IB | 96.3% | **2,298** | `build_sessions`: fewer than 10 IB bars, or no bars after IB close |
+| minus half-days | 96.3% | **2,212 = `S_all`** | 86 half-days |
+| **IB breaks by 11:30**, filters ignored | **91.82%** | **2,031 = `S_ib_broke`** | The **physical** event. §b.9's denominator and nothing else's. 181 no-breakout, **0 ambiguous** |
+| minus the §f no-trade filters | 97.0% | **1,971 = `S_breakout`** | 51 `min_ib_range_atr` + 9 `vendor_degraded`. `min_ib_range_ticks` removed nothing (it is 0) |
+| **Retrace touches the reload zone** in time | **~50% [MEASURE]** (plausible 35–65%) | ~986 = `S_filled` | Layer 1. Still unmeasured on real bars — §b.9 has not been run. Most uncertain number here |
+| Layer 2 confirmation fires | ~50% [MEASURE] | ~493 | Not measurable without tick data |
 
-Sealed and untouched: `BACKWARD_HOLDOUT` ~1,255 sessions, `FORWARD_HOLDOUT` ~585.
+The funnel reconciles exactly: `1971 + 181 + 51 + 9 = 2212`.
+
+Sealed: `FORWARD_HOLDOUT` ~603 sessions. `BACKWARD_HOLDOUT` is registered at ~1,130
+sessions but is **unfit data** and may not be counted as reserve — see §0.2.3.
+
+**What moved against the original estimate.** The table assumed ~82% of `S_all`
+would break. The real figure is **91.8%**, nine points higher, and 2,212 is
+133 sessions *below* the assumed 2,345 — so the sample is both smaller and less
+selective than planned. The direction of both surprises is unfavourable.
 
 #### `S_ib_broke` and `S_breakout` are DIFFERENT numbers — the stage that was missing
 
@@ -2139,6 +2259,38 @@ signal, so Layer 0 has no directional filter and is closer to a coin flip on the
 first move than to a breakout system. In that case raise `breakout_buffer_ticks`
 through its declared range and report the funnel at each value, as a **reported
 sensitivity, not an optimisation** (§g.0.1) — the primary stays at 1.
+
+#### THE RULING — measured, decided, and the denominator PINNED
+
+The rule above was written without saying which denominator "`S_breakout` … above
+~90%" is a share **of**. On real bars that ambiguity is the whole decision, because
+the three candidate rates land on both sides of the line:
+
+```
+S_breakout  / S_all      1971 / 2212  =  89.10%     <- BELOW 90
+S_breakout  / eligible   1971 / 2161  =  91.21%     <- above 90   (eligible = S_all - 51 filtered)
+S_ib_broke  / S_all      2031 / 2212  =  91.82%     <- above 90
+```
+
+**RULING, 2026-09-15, by the project owner.** The registered denominator is
+**`S_all`**. The rate is therefore **89.10%**, which is below the ~90% line, and
+**`breakout_buffer_ticks` stays at 1**. The buffer sweep described above is **not**
+triggered and is not to be run as a consequence of this measurement.
+
+**This is now pinned and may not be re-read.** `S_all` is the denominator for this
+rule, permanently. Any future quote of "the breakout rate" states its denominator
+explicitly or it is not a number.
+
+**Recorded honestly: the ruling is close, and the other two readings say the
+opposite.** 89.10% clears the line by nine tenths of a point, and both alternative
+denominators exceed 90%. The substantive worry the rule was written to catch — that
+a 1-tick buffer is not filtering anything and "the IB broke" is barely an event —
+is *not* dispelled by the ruling; 89.1% is still nearly nine sessions in ten. That
+concern is instead answered directly, and much more strongly, by §i.4: the C2
+coin-flip test puts P0 at the 39.9th percentile of random-direction shuffles, and
+the C3 `direction_value` interval straddles zero. The breakout carries no
+directional information whatever the buffer is. Raising the buffer would change how
+many of those non-signals are taken, not what they are worth.
 
 ### h.2 Bucket boundaries — expanding terciles, not hard-coded cuts
 
@@ -2347,6 +2499,203 @@ PASS requires ALL of:
 
 A point estimate that beats a control but whose paired interval straddles zero is
 **not a pass**. It is a result consistent with no edge.
+
+### i.4 STEP 1 RESULT OF RECORD — Layer 0 FAILED
+
+Run 2026-09-15. Report: `output/step1_P0.txt`. Per-session detail:
+`output/step1_P0_sessions.parquet`. This section is the result of record; the
+`.txt` is its artifact.
+
+#### i.4.1 THE CLAIM, SCOPED EXACTLY
+
+> **Bar-derived opening-range breakout on NQ, under configuration P0, on
+> `DEVELOPMENT` = 2015-01-02 → 2024-05-01, has no measurable directional edge on
+> 1-minute OHLCV bars, and loses money after MNQ costs.**
+
+Every qualifier in that sentence is load-bearing:
+
+| Qualifier | Why it is there |
+|---|---|
+| **bar-derived** | 1-minute OHLCV. Intrabar order is unrecoverable and every ambiguity was resolved against the trade (§a.5). Tick or MBO data is a different instrument of measurement and was not used. |
+| **NQ** | One instrument. Nothing here transfers to ES, CL, or equities. |
+| **P0's geometry** | IB30, close-through, `buffer = 1 tick`, entry next-bar open, stop at the opposite IB extreme, `R = 2.0`, hard flat 11:30 ET. |
+| **09:30–11:30 ET** | The morning window only. Full RTH was never tested. |
+| **2015-01-02 → 2024-05-01** | 2,212 sessions. Both holdouts sealed; `BACKWARD_HOLDOUT` is additionally unfit (§0.2.3). |
+| **after MNQ costs** | 1 tick slippage per market side, $0.85 commission per side, 1 contract. See §i.4.3 — the gross result is a separate and more informative statement. |
+
+**THE CONCLUSION COVERS NAIVE ORB TOO.** The four `k_ib_range` configurations —
+stop at 0.5 × IB range, the textbook fixed-fraction breakout stop — failed
+alongside the four `opposite_ib_extreme` ones. So this is not a finding about one
+exotic stop placement; both standard stop families died on the same sample.
+
+**WHAT IS NOT CLAIMED. Do not write, quote, or imply "ORB does not work".**
+Specifically not established: any statement about ORB on another instrument,
+another session window, another IB length tested as a primary, a longer or earlier
+sample, a bar resolution other than 1 minute, a Layer 1 or Layer 2 overlay
+evaluated on its own terms, or a version informed by order flow. Those were not
+tested. A negative result on one pre-registered configuration is a negative result
+on one pre-registered configuration.
+
+#### i.4.2 The numbers of record
+
+```
+P0        n=2,212   trades=1,971   exp/session=-$2.57   exp/trade=-$2.88
+                    PF=0.92        win=46.7%            maxDD=-$8,613.50
+
+kill criterion 1   P0 - C1 stop-matched   -$1.68  CI [-6.26,  2.55]  straddles zero  FAIL
+kill criterion 2   C2 percentile rank      39.9   p = 0.6010                         FAIL
+kill criterion 3   direction_value        -$0.59  CI [-4.64,  3.42]  straddles zero  FAIL
+kill criterion 4   ambiguous_bar_pct       0.00%  (gate <= 15%)                       PASS
+kill criterion 5   grid_robustness         0/16 positive                              FAIL
+
+VERDICT: FAIL. Four of five criteria fail. The one pass is a data-quality gate,
+         not a performance gate.
+```
+
+Supporting, all pointing the same way: 7 of 10 years negative; both halves
+negative (H1 -$3.60/session PF 0.78, H2 -$1.53/session PF 0.97); excluding the
+COVID window still -$1.82/session; the 16-config grid spans -$1.95 to -$3.45 with
+no config positive — a uniform fail, not a spike.
+
+**`direction_value = -$0.59, CI [-4.64, 3.42]`.** The direction signal carries no
+information. This is the finding, and every other number is downstream of it.
+
+Per `docs/RESEARCH-PLAN.md`, Layers 1–3 are dead unless the owner rules otherwise.
+Layers 1 and 2 refine *location* and *confirmation* on top of a direction; there is
+no direction here to refine.
+
+#### i.4.3 AUDIT — THE COST DRAG. The verdict is CONFIRMED, not caused by costs
+
+0 of 16 configs positive inside a band as tight as -$1.95 to -$3.45 looks like a
+constant subtraction rather than the scatter of a strategy with no edge. It is.
+Splitting gross from net settles it:
+
+```
+P0    gross/trade   -$0.190      gross PF 0.994     gross win 48.5%
+      cost/trade    -$2.692      (theory: $2.70 market exit, $2.20 limit exit)
+      net/trade     -$2.882      = gross - cost, exactly
+```
+
+Across all 16 configurations:
+
+```
+gross exp/session    -$1.145 .. +$0.382      6 of 16 POSITIVE
+net   exp/session    -$3.452 .. -$1.953      0 of 16 positive
+cost/trade            $2.503 ..  $2.697      near-constant across every config
+gross profit factor   0.957  ..  1.014       centred on 1.000
+```
+
+Full table: `output/step1_audit_grid_gross.csv`.
+
+**Reading, plainly.** Gross is approximately zero and scatters either side of zero
+— 6 of 16 positive is what a coin does. Net is gross shifted down by a near-constant
+$2.5–2.7 per trade. There is no third thing happening. **The strategy has no edge
+and pays costs**, which is precisely the failure the kill criteria are built to
+detect. Had gross been materially negative, something else would have been wrong —
+a sign error, a fill model biased past pessimism, a bad series — and the verdict
+would have needed a different investigation. It was not.
+
+Corollary, and it is not a rescue: cheaper execution cannot save this. A zero-edge
+system at zero cost earns zero. The gross result, not the net one, is the reason
+Layer 0 is dead.
+
+#### i.4.4 AUDIT — C4 WAS A BUG. "Random entry beat ORB" is WITHDRAWN
+
+The first Step 1 run reported **C4 random-time at +$7.37/session, PF 1.40, maxDD
+-$1,429** against P0's -$2.57 and -$8,613. A control beating the strategy that
+decisively is either a real finding or a defect. **It was a defect — two of them,
+in `ivb/controls.py::c4_random_time`.** Both are now fixed and regression-tested in
+`tests/test_controls.py`.
+
+**D1 — LOOKAHEAD.** The entry minute was drawn uniformly over
+`[ib_close_idx, trade_end_idx - 1)`, the whole post-IB window, while the trade
+*direction* came from a breakout that had not necessarily happened yet.
+
+```
+entries landing strictly BEFORE the breakout entry bar    419 of 2,031   20.6%
+  their expectancy                                        +$33.62/trade
+  the legitimate remainder                                 +$1.38/trade
+  contribution to C4's headline                            +$6.37 of the +$7.37
+```
+
+One session in five was front-running a move whose direction it had been told in
+advance. The draw now starts at the breakout's own entry bar, so the lower bound of
+C4's support **is** P0's entry.
+
+**D2 — WRONG-SIDE STOP, i.e. free money.** Under `opposite_ib_extreme` the stop is
+a *fixed IB level* while C4's entry is random, so the entry can end up on the far
+side of its own stop. `risk = abs(entry - stop)` stayed positive, so nothing
+objected, and `simulate` then hit that stop on the entry bar and booked it as a
+**win**.
+
+```
+trades with the stop already in profit                     49 of 2,031    2.4%
+  exit reason                                              "stop", all 49
+  win rate                                                 87.8%
+  expectancy                                               +$36.10/trade
+  contribution to C4's headline                            +$0.80
+```
+
+Such a setup is unenterable and is now skipped as `stop_wrong_side`. Together D1
+and D2 account for **$7.17 of the $7.37**.
+
+**Known, quantified, accepted difference.** C4 (like C3) does not apply the §f
+no-trade filters, so it trades 60 sessions P0 refuses. Measured worth: **-$0.02 per
+session**. Kept and disclosed rather than fixed, because removing it means
+threading `feats` through the control API for two cents.
+
+**Everything else about C4 was already correct, and was verified rather than
+assumed:** the same `Config` object, so the same cost model; the same `simulate()`,
+so the same exit logic and the same pessimistic intrabar rule; the same
+`stop_level()` and the same `entry + R x risk` target formula; the same `S_all`
+denominator of 2,212 with non-traded sessions entering as zero; the same session
+window ending at `trade_end_idx`. The **entry-time distribution it drew from** is
+now `uniform[breakout entry bar, trade_end_idx]`; before the fix it was
+`uniform[IB close, trade_end_idx - 2]`, median 43 minutes after the 10:00 ET IB
+close against P0's median of 10.
+
+**CORRECTED RESULT.**
+
+```
+C4 random-time     trades=1,970   exp/session=-$2.95   exp/trade=-$3.31
+                   PF=0.85        win=43.8%            maxDD=-$7,842.10
+P0 - C4            +$0.38   95% CI [-3.51, 4.02]   straddles zero
+```
+
+Two consequences, and they pull in opposite directions:
+
+1. **The "random entry beat ORB over 10 years" claim is withdrawn.** It was an
+   artifact. It must not be repeated anywhere.
+2. **A real finding replaces it, and it is worse for P0, not better.** Entering at
+   an arbitrary minute after the breakout is *statistically indistinguishable* from
+   entering at the breakout itself: +$0.38/session, interval straddling zero. The
+   breakout instant carries no timing information either. P0 was already failing;
+   correcting C4 removed a spurious reason to dismiss the comparison.
+
+**P0 itself was checked for D2 and is clean: 0 wrong-side stops in 1,971 trades.**
+That is geometry, not a guard — P0 enters the bar after a *close* through the IB
+edge, so it is normally on the far side of the opposite extreme. A large enough gap
+on the entry bar would break it, and `run_strategy` has no check. Recorded as a
+residual exposure; it has never fired on this sample.
+
+#### i.4.5 Defects found while producing this result
+
+All were found by auditing a number that looked wrong, not by a test suite failing.
+Recorded because the pattern matters more than the individual bugs.
+
+| # | Where | Effect | Status |
+|---|---|---|---|
+| D1–D3 | `ivb/rolls.py` | Spreads outranking outrights; the symbol parser failing *upward* into a sentinel that outranked every real contract; the one-digit decade wrap | Fixed, 37 tests |
+| D4 | roll selection | Front month is the wrong contract for 116 `DEVELOPMENT` sessions | **OPEN.** §0.1.5. Moves P0 by $0.08/session; verdict unchanged |
+| C4-D1/D2 | `ivb/controls.py` | Lookahead and free money in a control | Fixed, 3 tests |
+| — | `BACKWARD_HOLDOUT` | Unfit data, not merely sealed | §0.2.3. Partition effectively lost |
+
+**Every one of these made a result look BETTER than the truth.** D1–D3 produced a
+plausible-looking price series that was a calendar spread. C4's two defects produced
+a control that beat the strategy. That asymmetry is not coincidence — a defect that
+makes a number worse gets investigated immediately, and a defect that makes a number
+better gets believed. The only defence is auditing the numbers you *like*, which is
+what §i.4.3 and §i.4.4 are.
 
 ---
 

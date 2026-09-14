@@ -129,7 +129,40 @@ def c3_inversion(sessions: list[Session], cfg: Config) -> pd.DataFrame:
 
 
 def c4_random_time(sessions: list[Session], cfg: Config) -> pd.DataFrame:
-    """C4 -- real direction, random entry minute after IB close."""
+    """C4 -- real direction, random entry minute AT OR AFTER the breakout entry bar.
+
+    Asks one question: does entering exactly at the breakout beat entering at an
+    arbitrary later minute of the same session, in the same direction? Anything
+    that makes C4 easier than that is a defect in the control, not a finding.
+
+    TWO DEFECTS WERE FOUND AND FIXED HERE (Step 1 C4 audit, 2026-09-15). Both
+    inflated C4 and together produced the spurious +$7.37/session that beat P0:
+
+      D1 LOOKAHEAD. The draw was `integers(s.ib_close_idx, s.trade_end_idx - 1)`,
+         i.e. uniform over the whole post-IB window, while `d` comes from a
+         breakout that had not necessarily happened yet. 20.6% of draws (419 of
+         2,031) landed strictly BEFORE the breakout entry bar and earned
+         $33.62/trade against $1.38 for the legitimate remainder -- the control
+         was being told the direction of a move it then front-ran. The draw now
+         starts at `bo["entry_idx"]`, the same bar P0 enters on, so the lower
+         bound of the support IS P0's entry.
+
+      D2 WRONG-SIDE STOP = FREE MONEY. `stop_level` under
+         `opposite_ib_extreme` returns a FIXED IB level; the random entry can sit
+         on the far side of it. `risk = abs(...)` stayed positive, so the trade
+         was accepted with its stop ALREADY in profit: `simulate` hit it on the
+         entry bar and booked a guaranteed win. 49 trades (2.4%), all exit
+         reason "stop", 87.8% winners, $36.10/trade. Such a setup is
+         unenterable, so it is now skipped as `stop_wrong_side` rather than
+         priced. P0 cannot produce this case (measured: 0 of 1,971) because its
+         entry is the bar after a close through the IB edge.
+
+    KNOWN, QUANTIFIED, ACCEPTED DIFFERENCE. C4 (like C3) does not apply the
+    run_strategy §f filters, so it trades 60 sessions P0 refuses (51
+    min_ib_range_atr + 9 vendor_degraded). Measured worth: -$0.02/session. It is
+    reported rather than removed because doing so would mean threading `feats`
+    through the control API for two cents.
+    """
     rng = np.random.default_rng(cfg.seed + 1)
     rows = []
     for s in sessions:
@@ -140,7 +173,8 @@ def c4_random_time(sessions: list[Session], cfg: Config) -> pd.DataFrame:
             rows.append(_blank(s, "no_breakout"))
             continue
         d = bo["direction"]
-        lo, hi = s.ib_close_idx, s.trade_end_idx - 1
+        # D1: support starts at P0's own entry bar, never before it.
+        lo, hi = int(bo["entry_idx"]), s.trade_end_idx + 1
         if hi <= lo:
             rows.append(_blank(s, "no_time"))
             continue
@@ -150,6 +184,10 @@ def c4_random_time(sessions: list[Session], cfg: Config) -> pd.DataFrame:
         risk = abs(ep - sl)
         if risk <= 0:
             rows.append(_blank(s, "zero_risk"))
+            continue
+        # D2: a stop already on the profitable side of entry is not a trade.
+        if (sl >= ep) if d == 1 else (sl <= ep):
+            rows.append(_blank(s, "stop_wrong_side"))
             continue
         t = simulate(s, d, ei, ep, sl, ep + cfg.r_mult * risk * d, cfg)
         rows.append({"session_date": s.session_date, "traded": True,

@@ -355,6 +355,82 @@ def main() -> int:
           and redact(POSITIVE_CONTROL, "b9_gate_verdict", "keep") == "keep"
           and redact(NEGATIVE_CONTROL, "exit_mix", "6.1%") == "6.1%")
 
+
+    # ---- C4 AUDIT REGRESSIONS (Step 1 C4 audit, 2026-09-15) ---------------
+    # Both defects produced a control that BEAT the strategy (+$7.37/session vs
+    # -$2.57). Neither is detectable from C4's headline number alone, so both are
+    # pinned here by construction rather than by eyeballing an expectancy.
+    from ivb.controls import c4_random_time
+    from ivb.backtest import simulate as _sim
+    from ivb.sessions import stop_level as _stop
+
+    def _late_break_flat(date: str) -> Session:
+        """IB [100,110] for 30 bars, a wander INSIDE the range, break up at bar 60.
+
+        Bars 61..80 are perfectly flat at 112.0, so every admissible C4 entry has
+        entry == exit and nets exactly the round-turn cost. Any entry drawn from
+        the pre-breakout wander lands on a different price and cannot produce
+        that number -- which is the whole point of the fixture.
+        """
+        rows = [(101.0, 110.0, 100.0, 101.0, 500.0) for _ in range(30)]     # IB
+        for i in range(30):                                                  # inside
+            c = 101.0 + (i % 7)                                              # 101..107
+            rows.append((c, min(c + 1, 110.0), max(c - 1, 100.0), c, 500.0))
+        rows.append((110.0, 112.0, 110.0, 112.0, 500.0))                     # bar 60: break
+        rows += [(112.0, 112.0, 112.0, 112.0, 500.0) for _ in range(20)]     # 61..80 flat
+        return mk_session(rows, ib_high=110.0, ib_low=100.0, ib_close_idx=30, date=date)
+
+    late = [_late_break_flat("2020-{:02d}-02".format(m)) for m in range(1, 13)]
+    c4 = c4_random_time(late, P0)
+    tr4 = c4[c4["traded"] == True]                                           # noqa: E712
+    cost_pts = 2 * P0.slippage_points + (2 * P0.commission_per_side) / P0.point_value
+    expected = -cost_pts * P0.point_value
+    check("C4 D1 -- entry is NEVER drawn before the breakout entry bar",
+          len(tr4) == len(late)
+          and bool(np.allclose(tr4["net_dollars"].to_numpy(), expected)),
+          "n={} all net=${:.2f}? (a pre-breakout draw cannot hit this)".format(
+              len(tr4), expected))
+
+    def _collapse(date: str) -> Session:
+        """Breaks UP at bar 60, then every enterable bar sits BELOW the IB low.
+
+        `opposite_ib_extreme` returns a fixed level, so the stop (99.75) ends up
+        ABOVE a long's entry (90.0). `risk = abs(...)` stays positive, so the old
+        code accepted it and `simulate` booked the stop as an instant winner.
+        """
+        rows = [(101.0, 110.0, 100.0, 101.0, 500.0) for _ in range(30)]
+        rows += [(105.0, 106.0, 104.0, 105.0, 500.0) for _ in range(30)]
+        rows.append((110.0, 112.0, 110.0, 112.0, 500.0))                     # bar 60
+        rows += [(90.0, 90.0, 90.0, 90.0, 500.0) for _ in range(20)]         # below IB low
+        return mk_session(rows, ib_high=110.0, ib_low=100.0, ib_close_idx=30, date=date)
+
+    coll = [_collapse("2021-{:02d}-04".format(m)) for m in range(1, 13)]
+    c4c = c4_random_time(coll, P0)
+    check("C4 D2 -- a stop already on the profitable side of entry is SKIPPED",
+          int((c4c["traded"] == True).sum()) == 0                            # noqa: E712
+          and set(c4c["skip_reason"]) == {"stop_wrong_side"},
+          "traded={} reasons={}".format(int((c4c["traded"] == True).sum()),   # noqa: E712
+                                        sorted(set(c4c["skip_reason"]))))
+
+    # The defect was real, not theoretical: price the rejected setup and show it
+    # is a guaranteed win. If this ever stops being a win the guard is pointless.
+    s_ = coll[0]
+    ep_ = 90.0
+    sl_ = _stop(s_, 1, ep_, P0)
+    free = _sim(s_, 1, 61, ep_, sl_, ep_ + P0.r_mult * abs(ep_ - sl_), P0)
+    check("C4 D2 -- the rejected setup really was free money (why the guard exists)",
+          free.exit_reason == "stop" and free.net_dollars > 0 and sl_ > ep_,
+          "stop {} > entry {} -> exit={} net=${:.2f}".format(
+              sl_, ep_, free.exit_reason, free.net_dollars))
+
+    # RESIDUAL EXPOSURE, recorded not asserted. run_strategy has no such guard
+    # either. P0 is protected by its geometry, not by a check: it enters the bar
+    # after a CLOSE through the IB edge, so the entry is normally on the far side
+    # of the opposite extreme. A large enough gap on that entry bar would break
+    # it. Measured on DEVELOPMENT: 0 of 1,971 trades, so it has never happened on
+    # this sample -- which is an observation, not an invariant. The `coll`
+    # fixture above is exactly the shape that would trip it.
+
     print("\n{}/{} control tests passed.".format(len(PASS), len(PASS) + len(FAIL)))
     return 0 if not FAIL else 1
 
