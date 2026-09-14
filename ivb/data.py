@@ -145,7 +145,8 @@ def download(start: str, end: str, *, out_dir: Path = RAW_DIR, force: bool = Fal
 def load(path: str | Path) -> pd.DataFrame:
     """Load raw bars and normalise to the project's canonical frame.
 
-    Returns columns: ts_et, symbol, open, high, low, close, volume, session_date
+    Returns columns: ts_et, instrument_id, symbol, open, high, low, close,
+    volume, session_date
     """
     df = pd.read_parquet(path)
     df = df.reset_index()
@@ -164,7 +165,20 @@ def load(path: str | Path) -> pd.DataFrame:
     sym_col = "symbol" if "symbol" in df.columns else "raw_symbol"
     df["symbol"] = df[sym_col].astype(str)
 
-    keep = ["ts_et", "symbol", "open", "high", "low", "close", "volume"]
+    # instrument_id is the ONLY unambiguous contract key. Databento's symbol
+    # string carries a single-digit year, so "NQH5" means March 2015 AND March
+    # 2025 -- two different contracts, one string. Observed in this dataset:
+    # id 50207 (2014-01..2015-03) and id 42288528 (2024-01..2025-03).
+    # Carry the id through; the symbol string alone cannot be trusted as a key.
+    if "instrument_id" in df.columns:
+        df["instrument_id"] = pd.to_numeric(df["instrument_id"], errors="coerce").astype("Int64")
+    else:
+        # Synthetic fixtures have no id column and no decade collisions, so a
+        # surrogate keyed on the symbol is exact there. Never reached on vendor data.
+        df["instrument_id"] = pd.factorize(df["symbol"])[0].astype("int64")
+        df["instrument_id"] = df["instrument_id"].astype("Int64")
+
+    keep = ["ts_et", "instrument_id", "symbol", "open", "high", "low", "close", "volume"]
     df = df[keep].copy()
     for c in ("open", "high", "low", "close", "volume"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
