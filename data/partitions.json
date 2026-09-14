@@ -1,0 +1,16 @@
+{
+  "BACKWARD_HOLDOUT": [
+    "2010-01-01",
+    "2014-12-31"
+  ],
+  "DEVELOPMENT": [
+    "2015-01-01",
+    "2017-05-24"
+  ],
+  "FORWARD_HOLDOUT": [
+    "2017-05-25",
+    "present"
+  ],
+  "dev_fraction": 0.8,
+  "note": "Computed once by session count. Never recompute after Step 1 begins."
+}

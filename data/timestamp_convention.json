@@ -1,0 +1,14 @@
+{
+  "convention": "open_stamped",
+  "sessions_tested": 20,
+  "spike_at_0930": 20,
+  "spike_at_0931": 0,
+  "spike_at_0929": 0,
+  "bars_1600_with_volume": 0,
+  "median_rth_bar_count": 390.0,
+  "sessions_with_390_bars": 20,
+  "confident": true,
+  "notes": [
+    "Open volume spike on the 09:30 bar. IVB-SPEC sec 0 stamping is CORRECT."
+  ]
+}
