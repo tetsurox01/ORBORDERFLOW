@@ -1,0 +1,94 @@
+==============================================================================
+STEP 1 -- BASELINE IB BREAKOUT   config=P0   cost_model=MNQ
+partition=DEVELOPMENT   ib=30min   trigger=close_through   R=2.0   intrabar=pessimistic
+==============================================================================
+
+-- GATES (read these BEFORE the PnL) --
+ambiguous_bar_pct   = 0.00%  (gate: <= 15%)
+GATE VERDICT: PASS
+
+-- SAMPLE FUNNEL (replaces the [MEASURE] placeholders in spec sec h.1) --
+S_all                          2212
+filtered_min_ib_range          51
+no_breakout                    181
+S_breakout                     1971
+breakout_rate_of_eligible      0.912
+
+-- SKIP BREAKDOWN --
+          reason  sessions       pct
+          TRADED      1971 89.104882
+     no_breakout       181  8.182640
+min_ib_range_atr        51  2.305606
+ vendor_degraded         9  0.406872
+
+-- HEADLINE (denominator = S_all, non-breakout days count as zero) --
+P0 strategy                  n= 2212  trades= 1971  exp/sess=$   -2.57  exp/trade=$   -2.88  PF=  0.92  win=46.7%  maxDD=$-8,613.50
+C1 drift (stop-matched)      n= 2212  trades= 2209  exp/sess=$   -0.89  exp/trade=$   -0.89  PF=  0.97  win=41.2%  maxDD=$-5,371.90
+C1 drift (no stop)           n= 2212  trades= 2212  exp/sess=$   -2.73  exp/trade=$   -2.73  PF=  0.93  win=52.7%  maxDD=$-7,484.10
+C3 inversion                 n= 2212  trades= 2031  exp/sess=$   -1.40  exp/trade=$   -1.52  PF=  0.96  win=48.3%  maxDD=$-5,524.60
+C4 random-time               n= 2212  trades= 1970  exp/sess=$   -2.95  exp/trade=$   -3.31  PF=  0.85  win=43.8%  maxDD=$-7,842.10
+
+-- PAIRED BLOCK-BOOTSTRAP CIs (monthly blocks) --
+P0 - C1 drift (stop-matched)       diff=$-1.68  95% CI [-6.26, 2.55]  blocks=109  straddles zero -> NOT a pass
+P0 - C3 inversion                  diff=$-1.17  95% CI [-9.29, 6.85]  blocks=109  straddles zero -> NOT a pass
+P0 - C4 random-time                diff=$0.38  95% CI [-3.51, 4.02]  blocks=109  straddles zero -> NOT a pass
+direction_value = (P0 - C3)/2      diff=$-0.59  95% CI [-4.64, 3.42]  blocks=109  straddles zero -> NOT a pass
+
+C2 coin-flip: P0 percentile rank = 39.9  (gate: > 90)  p = 0.6010  shuffles=1000
+
+-- BY YEAR --
+ year  sessions  trades  exp_per_session  exp_per_trade  profit_factor  win_rate  max_drawdown
+ 2015       174     155        -5.106322      -5.732258       0.603561  0.412903       -1097.2
+ 2016       208     182        -2.016346      -2.304396       0.813956  0.456044        -564.3
+ 2017       249     226        -3.316064      -3.653540       0.693697  0.376106        -973.2
+ 2018       248     219        -6.303629      -7.138356       0.751648  0.424658       -1767.2
+ 2019       249     207        -1.662249      -1.999517       0.910481  0.454106        -764.1
+ 2020       251     220        -5.400398      -6.161364       0.879585  0.513636       -2441.3
+ 2021       251     227         0.673705       0.744934       1.016967  0.511013       -2606.1
+ 2022       250     233        -6.406400      -6.873820       0.905904  0.519313       -3540.0
+ 2023       248     225         2.921371       3.220000       1.068493  0.484444       -1545.4
+ 2024        84      77         5.882143       6.416883       1.145602  0.545455       -1189.9
+
+-- BY DIRECTION --
+direction  trades  exp_per_trade  profit_factor  win_rate   avg_mfe   avg_mae
+    short     928      -3.957543       0.899198  0.432112 36.966595 33.206897
+     long    1043      -1.924832       0.940763  0.497603 29.476270 29.724353
+
+-- BY IB-RANGE DECILE (diagnosis, not a filter) --
+ decile  ib_range_atr_lo  ib_range_atr_hi  trades  exp_per_trade  win_rate  profit_factor
+      1         0.150415         0.199545     198      -3.351515  0.479798       0.883937
+      2         0.199571         0.229332     197       5.038579  0.431472       1.170670
+      3         0.229408         0.256791     197      -6.037563  0.482234       0.826185
+      4         0.256910         0.281492     197      -6.182234  0.451777       0.830166
+      5         0.281524         0.305776     197      -8.542640  0.426396       0.757371
+      6         0.305807         0.339640     197      -3.928426  0.441624       0.894607
+      7         0.339788         0.382728     197       8.383756  0.502538       1.277040
+      8         0.382939         0.440517     197       3.627411  0.477157       1.100455
+      9         0.440990         0.527908     197      -9.628934  0.461929       0.771381
+     10         0.528054         1.462356     197      -8.194924  0.512690       0.823093
+
+-- COVID SPLIT --
+excluding 2020-02-15..04-30  n= 2160  trades= 1927  exp/sess=$   -1.82  exp/trade=$   -2.04  PF=  0.94  win=46.7%  maxDD=$-6,859.70
+COVID window only            n=   52  trades=   44  exp/sess=$  -33.73  exp/trade=$  -39.86  PF=  0.57  win=47.7%  maxDD=$-2,253.80
+
+-- 16-CONFIG SENSITIVITY GRID (never a best case) --
+                                config  trades  exp_per_session  exp_per_trade  profit_factor  win_rate
+R1.0_opposite_ib_extreme_close_through    1971        -3.036709      -3.408016       0.904312  0.469305
+R1.0_opposite_ib_extreme_trade_through    2037        -2.808273      -3.049534       0.915680  0.476190
+         R1.0_k_ib_range_close_through    1971        -2.953074      -3.314155       0.884973  0.471334
+         R1.0_k_ib_range_trade_through    2037        -1.953391      -2.121208       0.926829  0.482572
+R1.5_opposite_ib_extreme_close_through    1971        -2.921429      -3.278640       0.908109  0.466768
+R1.5_opposite_ib_extreme_trade_through    2037        -2.409991      -2.617035       0.928063  0.470790
+         R1.5_k_ib_range_close_through    1971        -3.452396      -3.874531       0.875514  0.415525
+         R1.5_k_ib_range_trade_through    2037        -2.558273      -2.778056       0.911780  0.423171
+R2.0_opposite_ib_extreme_close_through    1971        -2.567902      -2.881887       0.919229  0.466768
+R2.0_opposite_ib_extreme_trade_through    2037        -2.093761      -2.273638       0.937546  0.469809
+         R2.0_k_ib_range_close_through    1971        -2.912161      -3.268239       0.896907  0.398275
+         R2.0_k_ib_range_trade_through    2037        -2.401627      -2.607953       0.919185  0.402062
+R3.0_opposite_ib_extreme_close_through    1971        -2.609268      -2.928311       0.917928  0.466768
+R3.0_opposite_ib_extreme_trade_through    2037        -2.121112      -2.303338       0.936731  0.469809
+         R3.0_k_ib_range_close_through    1971        -2.806600      -3.149772       0.901245  0.391679
+         R3.0_k_ib_range_trade_through    2037        -2.300136      -2.497742       0.923165  0.394698
+
+grid_robustness = 0/16 positive
+  -> NO CONFIGURATION IS POSITIVE. Not a spike -- a clean, uniform fail.
