@@ -168,7 +168,8 @@ def draw_profile(ax, profile, *, vah=None, val=None, poc=None,
 # CHART 1 -- one annotated session
 # ----------------------------------------------------------------------------
 def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
-                  profile=None, *, title: str = "", subtitle: str = "") -> plt.Figure:
+                  profile=None, *, title: str = "", subtitle: str = "",
+                  extra_notes: list | None = None) -> plt.Figure:
     """One session: IB box, fixed-range profile, levels, and the trade.
 
     bars    session dataframe with ts_et / open / high / low / close / volume,
@@ -176,6 +177,10 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
     levels  ib_high, ib_low, vah, poc, val, ib_end_idx;
             optional zone_bottom, zone_top.
     trade   optional; keys are documented in scripts/04_charts.py.
+    extra_notes
+            optional caveat lines appended BELOW the per-trade block, after a
+            blank separator. Additive only -- omitting it reproduces the
+            previous output byte for byte.
     """
     if profile is not None:
         fig, (axp, ax) = plt.subplots(
@@ -250,9 +255,15 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
                 ax.plot([xi], [trade["exit_price"]], marker="*" if ok else "X",
                         markersize=16 if ok else 11,
                         color=C["tp1"] if ok else C["stop"], zorder=8)
+                # An exit late in the session puts this label on top of the
+                # right-margin level labels, which draw_levels() cannot nudge
+                # out of the way because they are in a different coordinate
+                # space. Flip the text back into the chart instead.
+                late = xi > 0.82 * n
                 ax.annotate("exit: " + trade["exit_reason"],
                             (xi, trade["exit_price"]), textcoords="offset points",
-                            xytext=(10, -20 if ok else 16), fontsize=8,
+                            xytext=(-10 if late else 10, -20 if ok else 16),
+                            ha="right" if late else "left", fontsize=8,
                             color=C["tp1"] if ok else C["stop"], zorder=9,
                             bbox=dict(boxstyle="square,pad=0.22",
                                       facecolor="white", edgecolor="none"))
@@ -313,6 +324,12 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
                 "Layer 1 sits out. Layer 0 holds this move.",
             ]
 
+    # ---- caller-supplied caveats, last in the block -------------------------
+    if extra_notes:
+        if note_lines:
+            note_lines.append("")
+        note_lines += list(extra_notes)
+
     # ---- profile margin ----------------------------------------------------
     if profile is not None:
         draw_profile(axp, profile, vah=levels["vah"], val=levels["val"],
@@ -339,6 +356,133 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
                  bbox=dict(boxstyle="round,pad=0.55", facecolor="#f7f9fb",
                            edgecolor="#b8c1cc"))
 
+    fig.suptitle(title, fontsize=13, y=0.982)
+    if subtitle:
+        fig.text(0.5, 0.948, subtitle, fontsize=9, color="#555555", ha="center")
+    return fig
+
+
+# ----------------------------------------------------------------------------
+# CHART 1 (LAYER 0) -- one annotated Layer 0 trade. NO profile, by design.
+# ----------------------------------------------------------------------------
+def chart_layer0_session(bars: pd.DataFrame, levels: dict, trade: dict, *,
+                         title: str = "", subtitle: str = "",
+                         notes: list | None = None) -> plt.Figure:
+    """One Layer 0 session: IB box, breakout, entry, stop, target, exit.
+
+    Layer 0 owns NO volume profile, so this chart carries no VAH / POC / VAL and
+    no profile margin. Drawing them would put geometry on the page that the
+    tested strategy never consulted, which is the one thing a picture must not
+    do (see the module docstring).
+
+    bars    session dataframe with ts_et / open / high / low / close, already
+            sliced to the window to draw. x is POSITIONAL within that slice, so
+            every *_idx below must index the same slice.
+    levels  ib_high, ib_low, ib_end_idx.
+    trade   direction, breakout_idx, entry_idx, entry_price, stop_price,
+            target_price, exit_idx, exit_price, exit_reason, the preformatted
+            time strings brk_time / entry_time / exit_time, and the stats keys
+            risk_points, r_multiple, gross_points, cost_points, net_points,
+            gross_dollars, cost_dollars, net_dollars, money_label.
+    notes   extra monospace lines appended under the stats block.
+    """
+    fig, ax = plt.subplots(figsize=(14, 10.6))
+
+    draw_candles(ax, bars)
+    time_axis(ax, bars)
+    xt = len(bars) + 0.6
+
+    # ---- initial balance box ------------------------------------------------
+    ib_end = int(levels["ib_end_idx"])
+    ax.add_patch(Rectangle(
+        (-0.8, levels["ib_low"]), ib_end + 0.3, levels["ib_high"] - levels["ib_low"],
+        facecolor=C["ib_box"], alpha=0.10, edgecolor=C["ib_box"],
+        linewidth=1.0, linestyle="--", zorder=1))
+    ax.text(ib_end / 2, levels["ib_high"], "  initial balance window ",
+            fontsize=8, color=C["ib_line"], va="bottom", ha="center", zorder=6)
+
+    d = int(trade["direction"])
+    level_items = [
+        (levels["ib_high"], "IB_high", C["ib_line"], "-", 1.4),
+        (levels["ib_low"], "IB_low", C["ib_line"], "-", 1.4),
+        (trade["entry_price"], "ENTRY", C["entry"], "-", 1.0),
+        (trade["stop_price"], "STOP", C["stop"], ":", 1.6),
+        (trade["target_price"], "TARGET", C["tp1"], ":", 1.6),
+    ]
+
+    # ---- breakout / entry / exit markers -----------------------------------
+    bi = trade.get("breakout_idx")
+    if bi is not None:
+        y = bars["high"].iloc[bi] if d == 1 else bars["low"].iloc[bi]
+        ax.plot([bi], [y], marker="^" if d == 1 else "v", markersize=13,
+                color=C["brk"], zorder=7)
+        ax.annotate("breakout", (bi, y), textcoords="offset points",
+                    xytext=(0, 16 if d == 1 else -22), ha="center",
+                    fontsize=8, color=C["brk"], zorder=7)
+
+    ei = int(trade["entry_idx"])
+    ax.plot([ei], [trade["entry_price"]], marker="o", markersize=9,
+            markerfacecolor="white", markeredgecolor=C["entry"],
+            markeredgewidth=1.8, zorder=8)
+    ax.annotate("entry", (ei, trade["entry_price"]), textcoords="offset points",
+                xytext=(8, 12), fontsize=8, color=C["entry"], zorder=8)
+
+    xi = int(trade["exit_idx"])
+    won = trade["exit_reason"] == "tp1"
+    ax.plot([xi], [trade["exit_price"]], marker="*" if won else "X",
+            markersize=16 if won else 11,
+            color=C["tp1"] if won else C["stop"], zorder=8)
+    ax.annotate("exit: " + trade["exit_reason"], (xi, trade["exit_price"]),
+                textcoords="offset points", xytext=(10, -20 if won else 16),
+                fontsize=8, color=C["tp1"] if won else C["stop"], zorder=9,
+                bbox=dict(boxstyle="square,pad=0.22", facecolor="white",
+                          edgecolor="none"))
+    ax.plot([ei, xi], [trade["entry_price"], trade["exit_price"]],
+            color="#555555", linewidth=1.0, alpha=0.6, zorder=6)
+
+    # ---- stats block --------------------------------------------------------
+    risk = float(trade["risk_points"])
+    mny = trade.get("money_label", "$")
+    note_lines = [
+        "direction      {}".format("LONG" if d == 1 else "SHORT"),
+        "breakout       {}   bar {}   (close through IB {} the buffer)".format(
+            trade.get("brk_time", "?"), bi, "above" if d == 1 else "below"),
+        "entry          {}   {:,.2f}   (next bar OPEN)".format(
+            trade.get("entry_time", "?"), trade["entry_price"]),
+        "stop           {:,.2f}   (opposite IB extreme -/+ buffer)".format(
+            trade["stop_price"]),
+        "target         {:,.2f}   (entry {} {:.2f}R x risk_R)".format(
+            trade["target_price"], "+" if d == 1 else "-", trade.get("r_mult", 2.0)),
+        "exit           {}   {:,.2f}   reason: {}".format(
+            trade.get("exit_time", "?"), trade["exit_price"], trade["exit_reason"]),
+        "",
+        "risk_R         {:,.2f} pt  ({:,.0f} tk)   = |entry - stop|. The ONLY "
+        "denominator of an R multiple (sec c.2).".format(risk, risk / TICK),
+        "R achieved     {:+.2f}R   NET of costs (net_points / risk_R)".format(
+            trade["r_multiple"]),
+        "gross          {:+,.2f} pt   {}{:+,.2f}   exit_price - entry_price, "
+        "no costs".format(trade["gross_points"], mny, trade["gross_dollars"]),
+        "costs          {:+,.2f} pt   {}{:+,.2f}   1 tk slippage in, 1 tk out "
+        "unless TP1 (limit), plus commission".format(
+            -abs(trade["cost_points"]), mny, -abs(trade["cost_dollars"])),
+        "net            {:+,.2f} pt   {}{:+,.2f}".format(
+            trade["net_points"], mny, trade["net_dollars"]),
+    ]
+    if notes:
+        note_lines += [""] + list(notes)
+
+    ax.set_ylabel("price (NQ index points)")
+    ax.set_xlabel("time, ET (1-minute bars)")
+    fig.subplots_adjust(left=0.065, right=0.905, top=0.895,
+                        bottom=0.045 + 0.0165 * len(note_lines))
+
+    # levels LAST: the label nudging needs the final axes box and y limits
+    draw_levels(ax, level_items, xtext=xt)
+
+    fig.text(0.055, 0.012, "\n".join(note_lines), fontsize=9, family="monospace",
+             va="bottom", ha="left",
+             bbox=dict(boxstyle="round,pad=0.55", facecolor="#f7f9fb",
+                       edgecolor="#b8c1cc"))
     fig.suptitle(title, fontsize=13, y=0.982)
     if subtitle:
         fig.text(0.5, 0.948, subtitle, fontsize=9, color="#555555", ha="center")

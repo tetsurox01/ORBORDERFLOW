@@ -228,6 +228,11 @@ The 80% point is computed by **session count**, not calendar date, over the
 **Both holdouts may be opened exactly once, together, at the end.** Opening either
 one early destroys its value and there is no way to restore it.
 
+> **SUPERSEDED IN PART, 2026-09-15.** That rule was not followed. `FORWARD_HOLDOUT`
+> 2026-01-01 → 2026-08-31 was unsealed deliberately; see sec 0.2.3b HOLDOUT UNSEAL LOG.
+> Those 165 sessions are IN-SAMPLE from that date. 412 sealed sessions remain and they
+> are the entire out-of-sample capacity of the study.
+
 #### STANDING FACT — `BACKWARD_HOLDOUT` IS UNFIT DATA, NOT MERELY SEALED
 
 Measured 2026-09-15 on the front-month series the backtest actually consumes. This
@@ -270,6 +275,85 @@ normal token — its data is clean.
 **What this costs the study, stated plainly.** The research plan had two
 out-of-sample checks and now has one. Any claim of regime-independence that leaned
 on "it also holds 2010–2014" is unsupported and may not be made.
+
+### 0.2.3b HOLDOUT UNSEAL LOG
+
+Every deliberate opening of sealed data is recorded here, in order, before the
+data is touched. An unseal that is not in this log did not happen with consent.
+This log is append-only: entries are never edited or removed, because the whole
+point of it is that the in-sample surface of the study can be reconstructed
+later by anyone reading only this file.
+
+---
+
+#### UNSEAL #1 — 2026-09-15
+
+| Field | Value |
+|---|---|
+| Decision date | **2026-09-15** |
+| Decided by | the principal, explicitly and in writing |
+| Partition touched | `FORWARD_HOLDOUT` |
+| Range unsealed | **2026-01-01 → 2026-08-31** |
+| Sessions in that range | 165 RTH sessions (half-days already excluded); 3 are vendor-degraded, so 162 are usable |
+| Scope of the unseal | **partial** — the rest of `FORWARD_HOLDOUT` stays sealed |
+
+**Reason.** Visual inspection of Layer 1 mechanics on recent real bars. Every
+Layer 1 picture drawn so far came from `synthetic.parquet` or
+`synthetic_structured.parquet`. Neither shows what a fixed-range IB profile, a
+value area and a reload zone actually look like on NQ. The principal chose to
+spend part of the forward holdout to see the geometry on real, recent bars.
+
+**Consequence, binding and permanent.**
+
+1. The sessions 2026-01-01 → 2026-08-31 are **no longer out-of-sample**. They
+   have been looked at. Nothing can restore that.
+2. Any statistic computed on that range **from now on is IN-SAMPLE** and must be
+   labelled `IN-SAMPLE (unsealed 2026-09-15)` wherever it is reported — in a
+   table, a chart, a console line or prose. A number from this range presented
+   without that label is a reporting error, not a rounding one.
+3. That applies retroactively to anything already computed on the range and
+   forward to anything computed on it later, including a re-run of an untouched
+   script.
+4. It applies to a statistic computed on a range that *contains* this one. A
+   result over `FORWARD_HOLDOUT` as a whole is now a mixture of 412 sealed
+   sessions and 165 in-sample ones, and is not a clean out-of-sample result.
+   Either report the sealed sub-range on its own or label the mixture.
+
+**What the unseal did NOT include.** No Step 1–5 evaluation was run on these
+bars. No `b9_sensitivity()`. No aggregate statistic of any kind — no win rate,
+no expectancy, no fill rate, no counts across sessions. The output is
+per-session pictures and per-session numbers printed on those pictures. See
+`scripts/05_unseal_charts.py`, which is the only code permitted to read this
+range and which enforces the no-aggregates rule by not computing one.
+
+**Remaining sealed range after this unseal.**
+
+```
+FORWARD_HOLDOUT   2024-05-02 .. 2025-12-31     STILL SEALED   412 sessions
+                  2026-01-01 .. 2026-08-31     UNSEALED #1    165 sessions
+BACKWARD_HOLDOUT  2010-07-01 .. 2014-12-31     DEAD -- unfit, see sec 0.2.3
+```
+
+**This is the whole of the out-of-sample capacity that is left: 412 sessions,
+2024-05-02 → 2025-12-31, in one partition.** There is no second reserve.
+`BACKWARD_HOLDOUT` is not a fallback — sec 0.2.3 records it as measured unfit
+(wrong front-month contract on 72–100% of sessions, 8–103 median RTH bars out of
+390), so the study has exactly one out-of-sample check and it is now 29% smaller
+than it was registered at.
+
+Two things follow that were not true before 2026-09-15:
+
+- A *walk-forward* on `DEVELOPMENT` is now the study's main defence against
+  overfitting, because the holdout behind it is thinner and can be opened only
+  once more.
+- 412 sessions is roughly 1.6 years of the 09:30–11:30 window. That is enough to
+  reject a badly broken strategy and **not** enough to establish
+  regime-independence. No claim of regime-independence may be made from what is
+  left. Sec 0.2.3 already withdrew that claim when `BACKWARD_HOLDOUT` died; this
+  entry is the second and final narrowing.
+
+**Not a reason to spend the rest.** A partial unseal does not make the remainder
+cheaper. The 412 sessions are worth less per session than they were, not more.
 
 ### 0.2.4 VENDOR DATA QUALITY — degraded days are EXCLUDED, never repaired
 

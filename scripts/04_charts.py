@@ -11,8 +11,14 @@ Usage:
     python scripts/04_charts.py data/raw/nq_ohlcv1m_....parquet   # real data
     python scripts/04_charts.py <path> --session-date 2019-06-12
     python scripts/04_charts.py <path> --outdir output/charts
+    python scripts/04_charts.py <path> --skip-b9      # LAYER 0 ONLY, no profile
 
-Output: output/charts/*.png  (never committed)
+--skip-b9 draws Chart 1 from REAL Layer 0 trades in three labelled groups
+(random / one per exit reason / the tails), writes output/step1_trades.csv, and
+prints the exit-reason census. It calls neither b9_sensitivity() nor
+illustrate_layer1_trade() nor anything in ivb.profile.
+
+Output: output/charts/*.png  (never committed) and output/step1_trades.csv
 """
 from __future__ import annotations
 
@@ -29,8 +35,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ivb.backtest import run_strategy                              # noqa: E402
 from ivb.config import (DATA, GRID_BIN_WIDTH_MULTS,                # noqa: E402
                         GRID_HARD_STOP_TICKS, OUT, P0, TICK_SIZE)
-from ivb.exits import (CLOSE_INVALIDATION, HARD_STOP, TIME_STOP,   # noqa: E402
-                       TP1 as EXIT_TP1, format_frequency, frequency, resolve)
+from ivb.exits import (CLOSE_INVALIDATION, HARD_STOP, LAYER0_TO_LAYER1,  # noqa: E402
+                       TIME_STOP, TP1 as EXIT_TP1, format_frequency, frequency,
+                       resolve)
 from ivb.partitions import build_partitions, select                # noqa: E402
 from ivb.quality import degraded_dates, load_degraded             # noqa: E402
 from ivb.profile import (BIN_WIDTH_MULT, DEFAULT_VA_PCT, METHOD_LABELS,  # noqa: E402
@@ -400,12 +407,301 @@ def b9_caveat(null_synth: bool, pos_synth: bool, material: bool) -> list:
     return []
 
 
+# =============================================================================
+# LAYER 0 ONLY  (--skip-b9)
+# -----------------------------------------------------------------------------
+# Layer 0 is the ORB itself: IB, breakout, entry at the next bar open, stop at
+# the opposite IB extreme, target at R x risk_R. It has no volume profile, so
+# nothing in this section may touch ivb.profile, b9_sensitivity(), or the Layer 1
+# resolver illustrate_layer1_trade(). Every number below comes out of
+# ivb.backtest.run_strategy() -- the same call Step 1 makes -- so a picture here
+# cannot disagree with output/step1_P0.txt.
+#
+# SELECTION IS THE WHOLE POINT OF THE GROUPS. A chart is an impression-forming
+# device, so how its sessions were chosen decides what the impression is worth:
+#   GROUP A  uniform random over every taken trade -- the only group an
+#            impression may be formed from, and 6 is still a tiny sample.
+#   GROUP B  one uniform-random draw WITHIN each exit reason -- shows what each
+#            outcome looks like; says nothing about how often it happens.
+#   GROUP C  the extreme tails, chosen ON the outcome -- a bug-hunting
+#            instrument, never representative of anything.
+# =============================================================================
+TRADES_CSV = OUT / "step1_trades.csv"
+
+#: Columns written to the CSV, in this order. Keys starting with "_" are chart
+#: plumbing and are dropped.
+CSV_COLUMNS = [
+    "session_date", "direction", "breakout_time", "entry_time", "entry_price",
+    "stop_price", "target_price", "exit_time", "exit_price", "exit_reason",
+    "risk_points", "r_multiple_net", "gross_points", "cost_points", "net_points",
+    "gross_dollars", "cost_dollars", "net_dollars",
+]
+
+
+def layer0_trade_table(sessions, feats, cfg) -> tuple:
+    """One row per TAKEN P0 trade. Returns (run_strategy frame, trade table).
+
+    The breakout bar is re-derived with find_breakout(), which is memoised per
+    session and is the SAME call run_strategy() made -- not a re-detection with
+    different arguments. entry_idx / exit_idx are positional in s.bars, which the
+    chart slices from index 0, so they index the drawn window unchanged.
+    """
+    df = run_strategy(sessions, feats, cfg)
+    by_date = {s.session_date: s for s in sessions}
+    traded = df[df["traded"] == True]  # noqa: E712
+
+    out = []
+    for r in traded.itertuples(index=False):
+        s = by_date[r.session_date]
+        bo = find_breakout(s, cfg)
+        ts = pd.to_datetime(s.bars["ts_et"])
+        bi, ei, xi = int(bo["signal_idx"]), int(r.entry_idx), int(r.exit_idx)
+
+        # cost = gross - net, by construction in ivb/backtest.py: slippage on the
+        # entry, slippage on the exit UNLESS it was the limit target, plus the
+        # round-turn commission. Derived here, never re-modelled.
+        gross_pts = float(r.gross_points)
+        net_pts = float(r.net_points)
+        gross_d = gross_pts * cfg.point_value
+        net_d = float(r.net_dollars)
+
+        out.append({
+            "session_date": str(pd.Timestamp(r.session_date).date()),
+            "direction": "long" if r.direction == 1 else "short",
+            "breakout_time": ts.iloc[bi].strftime("%H:%M"),
+            "entry_time": ts.iloc[ei].strftime("%H:%M"),
+            "entry_price": round(float(r.entry_price), 2),
+            "stop_price": round(float(r.stop_price), 2),
+            "target_price": round(float(r.target_price), 2),
+            "exit_time": ts.iloc[xi].strftime("%H:%M"),
+            "exit_price": round(float(r.exit_price), 2),
+            # Mapped into the shared vocabulary (ivb/exits.py). close_invalidation
+            # is structurally impossible in Layer 0 -- there is no such rule here.
+            "exit_reason": LAYER0_TO_LAYER1[r.exit_reason],
+            "risk_points": round(float(r.risk_points), 2),
+            "r_multiple_net": round(float(r.r_multiple), 4),
+            "gross_points": round(gross_pts, 2),
+            "cost_points": round(gross_pts - net_pts, 4),
+            "net_points": round(net_pts, 4),
+            "gross_dollars": round(gross_d, 2),
+            "cost_dollars": round(gross_d - net_d, 2),
+            "net_dollars": round(net_d, 2),
+            "_breakout_idx": bi, "_entry_idx": ei, "_exit_idx": xi,
+            "_direction": int(r.direction),
+        })
+    return df, pd.DataFrame(out)
+
+
+def write_trades_csv(tbl: pd.DataFrame, path: Path) -> Path:
+    """Write the trade table, backing up any file already at `path` first."""
+    if path.exists():
+        bak = path.with_suffix(path.suffix + ".bak")
+        path.replace(bak)
+        print("[04] {} already existed -- moved to {}".format(path.name, bak.name))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tbl[CSV_COLUMNS].to_csv(path, index=False)
+    return path
+
+
+def draw_layer0(row: dict, by_date: dict, cfg, outdir: Path, fname: str,
+                title: str, src_note: str, notes: list) -> Path:
+    """Render one row of the trade table as an annotated session chart."""
+    s = by_date[pd.Timestamp(row["session_date"])]
+    win = s.bars.iloc[:s.trade_end_idx + 1]
+    levels = {"ib_high": s.ib_high, "ib_low": s.ib_low,
+              "ib_end_idx": s.ib_close_idx}
+    trade = {
+        "direction": row["_direction"],
+        "breakout_idx": row["_breakout_idx"],
+        "entry_idx": row["_entry_idx"],
+        "exit_idx": row["_exit_idx"],
+        "entry_price": row["entry_price"], "stop_price": row["stop_price"],
+        "target_price": row["target_price"], "exit_price": row["exit_price"],
+        "exit_reason": row["exit_reason"],
+        "brk_time": row["breakout_time"], "entry_time": row["entry_time"],
+        "exit_time": row["exit_time"],
+        "risk_points": row["risk_points"], "r_multiple": row["r_multiple_net"],
+        "gross_points": row["gross_points"], "cost_points": row["cost_points"],
+        "net_points": row["net_points"], "gross_dollars": row["gross_dollars"],
+        "cost_dollars": row["cost_dollars"], "net_dollars": row["net_dollars"],
+        "r_mult": cfg.r_mult, "money_label": "$",
+    }
+    f = viz.chart_layer0_session(
+        win, levels, trade, title=title,
+        subtitle="{}   P0 Layer 0: IB{}m, {} breakout, entry next bar open, stop "
+                 "at opposite IB extreme, R={:.1f}, {} costs   |   {}".format(
+                     row["session_date"], cfg.ib_minutes, cfg.breakout_trigger,
+                     cfg.r_mult, cfg.cost_model, src_note),
+        notes=notes)
+    return viz.save(f, outdir / fname)
+
+
+def layer0_run(sessions, feats, cfg, outdir: Path, src_note: str, kind: str,
+               seed: int, session_date) -> list:
+    """Chart 1 in Layer 0 form, the trade CSV, and the exit-reason census."""
+    # sec b.11: these are reported statistics -- PnL, exit mix, per-trade prices.
+    # The positive control may source none of them.
+    assert_reportable(kind, "layer0_trade_charts")
+
+    df, tbl = layer0_trade_table(sessions, feats, cfg)
+    by_date = {s.session_date: s for s in sessions}
+    n = len(tbl)
+    print("\n[04] LAYER 0 ONLY (--skip-b9). Nothing below touches ivb.profile,")
+    print("     b9_sensitivity(), or the Layer 1 resolver.")
+    print("[04] S_all = {:,} sessions   taken trades = {:,}".format(len(df), n))
+    if n == 0:
+        print("[04] no trades in this partition -- nothing to draw.")
+        return []
+
+    # ---- the census the charts are a sample OF ------------------------------
+    freq = frequency(tbl["exit_reason"].tolist())
+    print("\n[04] EXIT-REASON COUNTS across all {:,} taken trades".format(n))
+    print("     (this is the population the charts below sample from):")
+    print(format_frequency(freq))
+    print("     close_invalidation is 0 BY CONSTRUCTION: Layer 0 has no")
+    print("     invalidation rule. The zero is printed so it reads as measured,")
+    print("     not as absent (ivb/exits.py).")
+    pnl = tbl.groupby("exit_reason")["net_dollars"].agg(["count", "sum", "mean"])
+    print("\n[04] net $ by exit reason ({} cost model):".format(cfg.cost_model))
+    for r in pnl.itertuples():
+        print("     {:<20s} n {:>5,d}   total ${:>12,.2f}   mean ${:>8,.2f}".format(
+            r.Index, int(r.count), r.sum, r.mean))
+
+    # ---- sampling -----------------------------------------------------------
+    # ONE generator, drawn in a FIXED order (A, then B by reason, then C), so the
+    # seed reproduces exactly the same sessions on every re-run.
+    rng = np.random.default_rng(seed)
+    print("\n[04] chart sampling seed = {}  (numpy default_rng; draw order "
+          "A -> B -> C)".format(seed))
+
+    picks = []
+
+    # GROUP A -- uniform over every taken trade.
+    a_idx = sorted(int(i) for i in rng.choice(n, size=min(6, n), replace=False))
+    for k, i in enumerate(a_idx, 1):
+        picks.append(("A{}".format(k), i,
+                      "CHART 1  GROUP A{}   RANDOM sample of the {:,} P0 trades "
+                      "-- not recent, not best, not worst".format(k, n)))
+
+    # GROUP B -- one uniform draw WITHIN each exit reason.
+    for reason in (EXIT_TP1, HARD_STOP, TIME_STOP):
+        pool = tbl.index[tbl["exit_reason"] == reason].to_numpy()
+        if len(pool) == 0:
+            print("[04] WARNING: no trade with exit_reason {} -- group B has no "
+                  "example of it.".format(reason))
+            continue
+        i = int(pool[rng.integers(0, len(pool))])
+        picks.append(("B_" + reason, i,
+                      "CHART 1  GROUP B   exit_reason = {}   ({:,} of {:,} trades "
+                      "= {:.1f}%) -- one RANDOM example of this outcome".format(
+                          reason, len(pool), n, 100.0 * len(pool) / n)))
+
+    # GROUP C -- the tails. Chosen ON the outcome, so they are evidence about
+    # nothing except whether the machinery does what it claims.
+    order = tbl["net_dollars"].sort_values(kind="mergesort")
+    losers = [int(i) for i in order.index[:3]]
+    winners = [int(i) for i in order.index[-3:][::-1]]
+    for k, i in enumerate(winners, 1):
+        picks.append(("C_win{}".format(k), i,
+                      "CHART 1  GROUP C   TAIL -- largest winner #{}. NOT "
+                      "REPRESENTATIVE. Chosen on outcome, for bug-spotting "
+                      "only".format(k)))
+    for k, i in enumerate(losers, 1):
+        picks.append(("C_loss{}".format(k), i,
+                      "CHART 1  GROUP C   TAIL -- largest loser #{}. NOT "
+                      "REPRESENTATIVE. Chosen on outcome, for bug-spotting "
+                      "only".format(k)))
+
+    # GROUP D -- an explicitly named session, if one was asked for.
+    if session_date:
+        hit = tbl.index[tbl["session_date"] == session_date]
+        if len(hit) == 0:
+            print("[04] --session-date {} is not a TAKEN P0 trade in partition "
+                  "{}. Skipped.".format(session_date, cfg.partition))
+        else:
+            picks.append(("D_" + session_date, int(hit[0]),
+                          "CHART 1  GROUP D   session {} -- named on the command "
+                          "line, not sampled".format(session_date)))
+
+    # ---- the roster, printed before anything is drawn -----------------------
+    seen = {}
+    for tag, i, _ in picks:
+        seen.setdefault(i, []).append(tag)
+    dupes = {i: t for i, t in seen.items() if len(t) > 1}
+    print("\n[04] sessions chosen (seed {}):".format(seed))
+    for tag, i, _ in picks:
+        r = tbl.loc[i]
+        print("     {:<10s} {}  {:<5s} brk {}  exit {}  {:<10s} "
+              "R {:+6.2f}  net ${:>9,.2f}".format(
+                  tag, r["session_date"], r["direction"], r["breakout_time"],
+                  r["exit_time"], r["exit_reason"], r["r_multiple_net"],
+                  r["net_dollars"]))
+    if dupes:
+        print("     NOTE: {} session(s) appear in more than one group: {}".format(
+            len(dupes), "; ".join(
+                "{} = {}".format(tbl.loc[i, "session_date"], " + ".join(t))
+                for i, t in dupes.items())))
+        print("     Reported, not de-duplicated -- suppressing a collision would")
+        print("     change what group A is a uniform sample of.")
+
+    group_notes = {
+        "A": ["GROUP A: drawn uniformly at random from all {:,} taken P0 trades, "
+              "seed {}.".format(n, seed),
+              "Six charts out of {:,}. Nothing here is evidence; the result of "
+              "record is output/step1_P0.txt.".format(n)],
+        "B": ["GROUP B: one trade drawn at random WITHIN this exit reason, seed "
+              "{}. It shows what the".format(seed),
+              "outcome LOOKS like. It says nothing about how often it happens -- "
+              "see the census on the console."],
+        "C": ["GROUP C: a TAIL. Selected ON its PnL, so it is not representative "
+              "of anything and must",
+              "never be used to form an impression. It is here to make a bug "
+              "visible if one exists."],
+        "D": ["GROUP D: named on the command line, not sampled."],
+    }
+
+    written = []
+    for tag, i, title in picks:
+        row = tbl.loc[i].to_dict()
+        notes = group_notes[tag[0]] + [
+            "Layer 0 has NO volume profile. No VAH / VAL / POC exists to draw.",
+            "Costs: {} model, ${:.2f}/side commission + {} tick slippage per "
+            "market fill (none on a limit TP1).".format(
+                cfg.cost_model, cfg.commission_per_side, cfg.slippage_ticks_market),
+        ]
+        written.append(draw_layer0(
+            row, by_date, cfg, outdir,
+            "01_layer0_{}_{}.png".format(tag, row["session_date"]),
+            title, src_note, notes))
+
+    written.append(write_trades_csv(tbl, TRADES_CSV))
+    print("\n[04] wrote all {:,} trades to {}".format(n, TRADES_CSV.resolve()))
+    print("[04] SKIPPED under --skip-b9: sec b.9 sensitivity, the Layer 1 resolver,")
+    print("     the sec b.10 diagnostics, CHART 2 (profile methods) and CHART 3")
+    print("     (its S_ib_broke and S_filled bars come from those). CHARTS 4 and 5")
+    print("     are Layer 0 statistics and are unaffected -- run without the flag.")
+    return written
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("path", nargs="?", default=str(SYNTHETIC))
     ap.add_argument("--session-date", default=None,
                     help="YYYY-MM-DD; force chart 1 and 2 onto this session")
     ap.add_argument("--outdir", default=str(OUT / "charts"))
+    ap.add_argument("--skip-b9", action="store_true",
+                    help="LAYER 0 ONLY: draw Chart 1 from real P0 trades and "
+                         "write the trade CSV. Calls no profile code, no "
+                         "b9_sensitivity(), no Layer 1 resolver. Charts 2-5 are "
+                         "not drawn.")
+    ap.add_argument("--roll-calendar", default=None,
+                    help="--skip-b9 only: READ a roll calendar from this path "
+                         "instead of data/roll_calendar.csv. Nothing is written "
+                         "or rebuilt. Use it when the checked-in calendar is not "
+                         "the one a reported result was produced from.")
+    ap.add_argument("--chart-seed", type=int, default=None,
+                    help="seed for the --skip-b9 session sampling "
+                         "(default: Config.seed). Printed with the chosen dates.")
     args = ap.parse_args()
 
     cfg = P0
@@ -415,7 +711,33 @@ def main() -> int:
 
     assert_verified()
     bars = load(args.path)
-    cal = ensure_artifacts(bars, Path(args.path))
+    if args.skip_b9:
+        # READ-ONLY. ensure_artifacts() REBUILDS roll_calendar.csv,
+        # daily_adjusted.parquet and partitions.json whenever its source stamp
+        # does not match -- and data/partitions.json carries "never recompute
+        # after Step 1 begins". The Layer 0 charts exist to be compared against
+        # output/step1_P0.txt, so they must load exactly the artifacts Step 1
+        # loaded (scripts/03 calls load_roll_calendar() and nothing else) rather
+        # than regenerate a set of their own.
+        roll_path = Path(args.roll_calendar) if args.roll_calendar else ROLL_FILE
+        missing = [p for p in (roll_path, DATA / "daily_adjusted.parquet")
+                   if not p.exists()]
+        if missing:
+            print("[04] --skip-b9 will not build artifacts. Missing: {}".format(
+                ", ".join(str(p) for p in missing)))
+            print("     Run scripts/02_build_rolls.py first.")
+            return 2
+        cal = (load_roll_calendar() if roll_path == ROLL_FILE
+               else pd.read_csv(roll_path, parse_dates=["session_date"]))
+        print("[04] roll calendar: {}  ({:,} sessions, {} .. {})".format(
+            roll_path, len(cal), str(cal["session_date"].min().date()),
+            str(cal["session_date"].max().date())))
+        if roll_path != ROLL_FILE:
+            print("     *** NOT the default data/roll_calendar.csv. Every number")
+            print("     *** below is conditional on THIS calendar. Reconcile the")
+            print("     *** trade count against output/step1_P0.txt before use.")
+    else:
+        cal = ensure_artifacts(bars, Path(args.path))
     front = select(front_month_bars(bars, cal), cfg.partition)
     feats = daily_features(pd.read_parquet(DATA / "daily_adjusted.parquet"), cfg)
     sessions = build_sessions(front, cfg)
@@ -450,6 +772,20 @@ def main() -> int:
     else:
         src_note = "source: " + name
     written: list[Path] = []
+
+    # ---- LAYER 0 ONLY -------------------------------------------------------
+    # Returns BEFORE the per-session Layer 1 resolve loop below, which is the
+    # first thing in this function that imports profile geometry. The flag is a
+    # branch, not a set of conditionals threaded through the Layer 1 code, so
+    # "no profile code ran" is readable off the control flow.
+    if args.skip_b9:
+        seed = cfg.seed if args.chart_seed is None else args.chart_seed
+        written = layer0_run(sessions, feats, cfg, outdir, src_note, kind, seed,
+                             args.session_date)
+        print("\n[04] wrote {} file(s):".format(len(written)))
+        for p in written:
+            print("     " + str(p.resolve()))
+        return 0
 
     # ---- resolve every session once ----------------------------------------
     by_date = {str(s.session_date.date()): s for s in sessions}
