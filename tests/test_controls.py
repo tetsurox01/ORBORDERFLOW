@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from ivb.config import P0, TICK_SIZE                                # noqa: E402
 from ivb.profile import (METHODS, bin_width, build_profile,         # noqa: E402
+                         median_ib_bar_range_width as med_width,
                          method_spread, resolve_bin_size)
 from ivb.provenance import (NEGATIVE_CONTROL, POSITIVE_CONTROL, REAL,  # noqa: E402
                            QuarantineError, assert_reportable, classify, redact)
@@ -235,41 +236,103 @@ def main() -> int:
 
 
     # -----------------------------------------------------------------------
-    # sec b.2 -- BIN WIDTH IS RELATIVE
+    # sec b.2 -- BIN WIDTH IS RELATIVE  (RULE A, amended 2026-09-15)
     # -----------------------------------------------------------------------
     # A width fixed in points is a different fraction of a bar in 2015 and in 2026,
-    # so the profile would not be the same object at both ends of the sample. These
-    # checks pin the rule itself, not a number produced under it.
+    # so the profile would not be the same object at both ends of the sample. That
+    # requirement is unchanged. What changed is HOW the relative width is set:
+    # bin_width = ib_range / 20, not the median IB bar range. These checks pin the
+    # rule itself, not a number produced under it.
     def flat_ib(rng_pts, n=30, base=4200.0):
         """n identical bars, each spanning exactly `rng_pts` points."""
         return pd.DataFrame({"open": [base] * n, "high": [base + rng_pts] * n,
                              "low": [base] * n, "close": [base] * n,
                              "volume": [1000.0] * n})
 
-    check("sec b.2 bin width = median IB bar range, in ticks",
-          bin_width(flat_ib(3.0)) == 3.0,
-          "got {}".format(bin_width(flat_ib(3.0))))
-    check("sec b.2 bin width SCALES with bar height (2x bars -> 2x bin)",
-          bin_width(flat_ib(6.0)) == 2 * bin_width(flat_ib(3.0)))
+    def ramp_ib(rng_pts, n=30, base=4200.0):
+        """Same IB RANGE as flat_ib, but built by small bars stepping upward.
+
+        The per-bar height here is rng_pts / n, i.e. 30x smaller than flat_ib's.
+        Under the SUPERSEDED rule these two IBs get wildly different bin widths.
+        Under Rule A they must get the SAME one -- that is the whole amendment.
+        """
+        step = rng_pts / float(n)
+        lows = [base + i * step for i in range(n)]
+        return pd.DataFrame({"open": lows, "high": [l + step for l in lows],
+                             "low": lows, "close": lows, "volume": [1000.0] * n})
+
+    check("sec b.2 RULE A bin width = ib_range / 20, in ticks",
+          bin_width(flat_ib(100.0)) == 5.0,
+          "got {}".format(bin_width(flat_ib(100.0))))
+    check("sec b.2 bin width SCALES with IB RANGE (2x range -> 2x bin)",
+          bin_width(flat_ib(200.0)) == 2 * bin_width(flat_ib(100.0)))
     check("sec b.2 bin width is INDEPENDENT of price level",
-          bin_width(flat_ib(3.0, base=4200.0)) == bin_width(flat_ib(3.0, base=25000.0)),
+          bin_width(flat_ib(100.0, base=4200.0)) == bin_width(flat_ib(100.0, base=25000.0)),
           "the whole point: 2015 and 2026 measure the same object")
+    check("sec b.2 RULE A bin width is INDEPENDENT of bar height",
+          bin_width(flat_ib(100.0)) == bin_width(ramp_ib(100.0)),
+          "same IB range, 30x different bar height -> same width")
+    check("sec b.2 the SUPERSEDED rule was NOT independent of bar height",
+          med_width(flat_ib(100.0)) != med_width(ramp_ib(100.0)),
+          "old rule: {} vs {} -- this is what was replaced"
+          .format(med_width(flat_ib(100.0)), med_width(ramp_ib(100.0))))
     check("sec b.2 bin width rounds to the nearest tick",
-          bin_width(flat_ib(3.30)) == 3.25 and bin_width(flat_ib(3.40)) == 3.50,
-          "3.30 -> {}   3.40 -> {}".format(bin_width(flat_ib(3.30)),
-                                           bin_width(flat_ib(3.40))))
+          bin_width(flat_ib(66.0)) == 3.25 and bin_width(flat_ib(68.0)) == 3.50,
+          "3.30 -> {}   3.40 -> {}".format(bin_width(flat_ib(66.0)),
+                                           bin_width(flat_ib(68.0))))
     check("sec b.2 half a tick rounds UP, not to even",
-          bin_width(flat_ib(0.375)) == 0.50 and bin_width(flat_ib(0.625)) == 0.75,
+          bin_width(flat_ib(7.5)) == 0.50 and bin_width(flat_ib(12.5)) == 0.75,
           "numpy would round both to the even tick")
     check("sec b.2 bin width is FLOORED at 1 tick",
-          bin_width(flat_ib(0.01)) == TICK_SIZE,
-          "got {}".format(bin_width(flat_ib(0.01))))
+          bin_width(flat_ib(0.2)) == TICK_SIZE,
+          "got {}".format(bin_width(flat_ib(0.2))))
     check("sec b.2 the multiplier is a labelled sensitivity, and it bites",
-          bin_width(flat_ib(4.0), mult=0.5) == 2.0
-          and bin_width(flat_ib(4.0), mult=2.0) == 8.0)
+          bin_width(flat_ib(80.0), mult=0.5) == 2.0
+          and bin_width(flat_ib(80.0), mult=2.0) == 8.0)
     check("sec b.2 bin_size=None applies the rule; a float OVERRIDES it",
-          resolve_bin_size(flat_ib(3.0), None) == 3.0
-          and resolve_bin_size(flat_ib(3.0), 1.0) == 1.0)
+          resolve_bin_size(flat_ib(100.0), None) == 5.0
+          and resolve_bin_size(flat_ib(100.0), 1.0) == 1.0)
+
+    # THE HEADLINE OF THE AMENDMENT. The old rule delivered ~5.9 bins across the
+    # IB at every price in every year -- sqrt(30) arithmetic. Rule A delivers 20
+    # by construction, and does so whatever the bars inside the IB look like.
+    for name, ib in (("flat bars", flat_ib(100.0)), ("ramped bars", ramp_ib(100.0))):
+        pr = build_profile(ib)
+        check("sec b.2 RULE A puts ~20 bins across the IB ({})".format(name),
+              19 <= len(pr.centers) <= 21, "{} bins".format(len(pr.centers)))
+    # The old rule's bin count was a function of the SHAPE of the bars inside the
+    # IB, not of the IB. Two windows with an IDENTICAL 100-point range get 1 bin
+    # and 31 bins from it. On real NQ that shape is near-random-walk, so the
+    # measured answer sat at ~5.9 bins (sqrt(30) = 5.5) in every year 2015-2026 --
+    # but the dependence itself is the defect, and it shows up on any synthetic.
+    old_flat = 100.0 / med_width(flat_ib(100.0))
+    old_ramp = 100.0 / med_width(ramp_ib(100.0))
+    check("sec b.2 the SUPERSEDED rule's bin COUNT depended on bar shape",
+          old_flat < 2 and old_ramp > 25,
+          "identical 100-pt IB range -> {:.1f} bins vs {:.1f} bins. Rule A gives "
+          "20 for both.".format(old_flat, old_ramp))
+
+    # -----------------------------------------------------------------------
+    # sec b.2 -- DEFECT C2: the grid is ANCHORED AT IB_LOW, not at price zero
+    # -----------------------------------------------------------------------
+    # The grid used to start at floor(ib_low / bin_size) * bin_size, counted from
+    # absolute price 0.00, so the outer bins hung outside the IB and VAH / VAL --
+    # which are bin EDGES -- could be reported outside the window that defines
+    # them. Measured on 2,365 real sessions: 46.6% of sessions had one or both
+    # outside. These checks pin the fix at a price level where the old grid was
+    # guaranteed to be misaligned.
+    for base in (4207.37, 25013.11, 4200.0):
+        ib = ramp_ib(100.0, base=base)
+        pr = build_profile(ib)
+        lo_t, hi_t = float(ib["low"].min()), float(ib["high"].max())
+        check("sec b.2 C2 grid starts EXACTLY at IB_low (base {})".format(base),
+              abs(float(pr.edges[0]) - lo_t) < 1e-9,
+              "edge0 {} vs IB_low {}".format(pr.edges[0], lo_t))
+        check("sec b.2 C2 VAH <= IB_high and VAL >= IB_low (base {})".format(base),
+              pr.vah <= hi_t + 1e-9 and pr.val >= lo_t - 1e-9,
+              "VAH {} VAL {} in [{}, {}]".format(pr.vah, pr.val, lo_t, hi_t))
+        check("sec b.2 C2 POC also sits inside the IB (base {})".format(base),
+              lo_t - 1e-9 <= pr.poc <= hi_t + 1e-9, "POC {}".format(pr.poc))
 
     # Scale invariance of the whole profile, which is what the rule is FOR. Take one
     # anchored IB window, multiply every price by 5 (a 2015 -> 2026 move in NQ), and
@@ -280,14 +343,36 @@ def main() -> int:
     for c in ("open", "high", "low", "close"):
         w5[c] = (w5[c] * 5.0 / TICK_SIZE).round() * TICK_SIZE
     pa, pb = build_profile(w), build_profile(w5)
-    check("sec b.2 relative bins are SCALE-INVARIANT: same bin count at 5x price",
-          abs(len(pa.centers) - len(pb.centers)) <= 1,
-          "{} bins vs {} bins".format(len(pa.centers), len(pb.centers)))
-    va_bins_a = (pa.vah - pa.val) / pa.bin_size
-    va_bins_b = (pb.vah - pb.val) / pb.bin_size
-    check("sec b.2 value area is the same WIDTH IN BINS at 5x price",
-          abs(va_bins_a - va_bins_b) <= 1.0,
-          "{:.1f} vs {:.1f} bins".format(va_bins_a, va_bins_b))
+    rng_a = float(w["high"].max() - w["low"].min())
+    rng_b = float(w5["high"].max() - w5["low"].min())
+    check("sec b.2 relative bins are SCALE-INVARIANT: ~20 bins at BOTH prices",
+          20 <= len(pa.centers) <= 25 and 20 <= len(pb.centers) <= 25,
+          "{} bins vs {} bins (a fixed 1.0-pt bin gives 6 vs 30 on these)"
+          .format(len(pa.centers), len(pb.centers)))
+    # RESIDUAL, STATED NOT HIDDEN. Rule A is exactly scale-invariant in real
+    # arithmetic and only approximately so on a tick grid: bin_width is rounded to
+    # a tick, so bins_across_IB = ceil(ib_range / round_tick(ib_range / 20)), which
+    # is 20 when ib_range/20 is a clean multiple of the tick and drifts up toward
+    # 25 as ib_range/20 approaches ONE tick. It bites only on very small IB ranges.
+    # This synthetic window is one: its range is 6.00 pt, so raw bin = 0.30 pt,
+    # which the 0.25 grid cannot represent -> 0.25 and 24 bins. At 5x price the
+    # range is 30.00 pt, raw bin 1.50 pt, exact -> 20 bins. On real NQ the IB range
+    # is tens to hundreds of points, so raw bin is 6-60 ticks and the effect is
+    # a few percent. It is bounded and it never inverts.
+    quant_a = len(pa.centers) / 20.0
+    quant_b = len(pb.centers) / 20.0
+    check("sec b.2 tick quantisation is the ONLY residual, and it is bounded",
+          1.0 <= quant_a <= 1.25 and 1.0 <= quant_b <= 1.25,
+          "bins/N = {:.2f} at 1x, {:.2f} at 5x -- never below 1, never above 1.25"
+          .format(quant_a, quant_b))
+    # The scale-free quantity that actually feeds risk_R is the value-area width as
+    # a FRACTION of the IB range. That is immune to tick quantisation and is what
+    # scale-invariance has to deliver.
+    va_frac_a = (pa.vah - pa.val) / rng_a
+    va_frac_b = (pb.vah - pb.val) / rng_b
+    check("sec b.2 value area is the same FRACTION OF THE IB at 5x price",
+          abs(va_frac_a - va_frac_b) <= 0.05,
+          "{:.3f} vs {:.3f} of the IB range".format(va_frac_a, va_frac_b))
     fixed_a = build_profile(w, bin_size=1.0)
     fixed_b = build_profile(w5, bin_size=1.0)
     check("sec b.2 a FIXED 1.0-point bin is NOT scale-invariant -- the failure mode",

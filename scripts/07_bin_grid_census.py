@@ -1,4 +1,20 @@
-"""BIN-GRID CENSUS -- how many profile bins span the initial balance, by year.
+"""RE-RUN NOTE, 2026-09-15 -- THIS SCRIPT NOW MEASURES THE AMENDED RULE.
+
+    The census below was written to MEASURE the original sec b.2 primary
+    (bin_width = median IB bar range) and to expose defects C1 and C2 in it.
+    Both have since been fixed in ivb/profile.py: the width rule is now Rule A
+    (bin_width = ib_range / 20) and the grid is anchored at ib_low with VAH / VAL
+    / POC clamped into the IB. This script imports ivb.profile, so re-running it
+    now reports the FIXED geometry, not the defect. Expect ~20 bins across the IB
+    and ZERO sessions with VAH above IB_high or VAL below IB_low.
+
+    The original defect measurements are preserved alongside, as
+    bin_grid_census_sessions_PRE_RULE_A.csv and bin_grid_census_by_year_PRE_RULE_A.csv.
+
+    The C1 / C2 write-up that follows is kept VERBATIM as the record of what was
+    found. Read it in the past tense.
+
+    BIN-GRID CENSUS -- how many profile bins span the initial balance, by year.
 
 ===========================================================================
 REPORT ONLY. THIS SCRIPT CHANGES NOTHING AND FIXES NOTHING.
@@ -261,7 +277,10 @@ def main() -> int:
     tab.to_csv(tab_p, index=False)
     print("\n[07] wrote {}".format(csv_p))
     print("[07] wrote {}".format(tab_p))
-    print("[07] NOTHING WAS FIXED. ivb/profile.py is unchanged.")
+    print("[07] REPORT ONLY -- this script still fixes nothing and computes no PnL.")
+    print("[07] ivb/profile.py WAS since amended (Rule A + ib_low anchor), so the")
+    print("[07] numbers above describe the FIXED geometry. The defect measurements")
+    print("[07] are in the *_PRE_RULE_A.csv files next to these.")
     return 0
 
 

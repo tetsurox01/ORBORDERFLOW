@@ -26,51 +26,100 @@ DEFAULT_VA_PCT = 0.70
 MIN_ZONE_WIDTH = 2 * TICK_SIZE
 
 # --------------------------------------------------------------------------
-# sec b.2  BIN WIDTH IS RELATIVE, NOT ABSOLUTE -- pre-registered blind
+# sec b.2  BIN WIDTH IS RELATIVE -- RULE A, AMENDED 2026-09-15
 # --------------------------------------------------------------------------
-# A bin width fixed in POINTS is not the same object at both ends of the sample.
-# NQ traded ~4,200 in 2015 and several times that now, so a 1-minute bar spans a
-# steadily larger number of fixed-width bins as the sample advances. The sec b.9
-# verdict would then differ between 2015 and 2026 for a reason that has nothing to
-# do with the market, and the profile would not be measuring one thing.
+# A bin width fixed in POINTS is not the same object at both ends of the sample,
+# so the width must be relative. That part of sec b.2 stands and is unchanged.
 #
-# PRE-REGISTERED PRIMARY RULE (fixed before any real bar was loaded):
+# WHAT CHANGED, AND WHY. The original pre-registered primary was
 #
-#     bin_width = median 1-minute bar range over THIS session's IB window,
-#                 rounded to the nearest tick, floored at 1 tick.
+#     bin_width = median 1-minute bar range over THIS session's IB window
 #
-# Per session, not per sample: a single sample-wide median drifts across the sample
-# exactly the way a fixed point value does. Computed from IB bars only, so it is
-# known at IB close and carries no lookahead.
+# It is scale-invariant, exactly as registered -- measured r(bins_across_IB,
+# price) = -0.019 over 2,365 sessions, 2015-2026, across a 6.3x move in NQ. It is
+# also uselessly COARSE, and was coarse in 2015 too. The reason is arithmetic,
+# not drift: for a near-random walk the range of N bars is ~sqrt(N) bar heights,
+# so setting bin = median bar height yields ~sqrt(30) = 5.5 bins for a 30-minute
+# IB at ANY price in ANY regime. Measured p50 of ib_range / med_ib_bar_range =
+# 5.85 against sqrt(30) = 5.48. 96.0% of sessions had under 10 bins. A POC, a VAH
+# and a VAL resolved on a 5-bin histogram are not locations, they are noise.
+# No multiplier rescues this: the whole {0.5, 1.0, 2.0} axis spans 2.7 to 11 bins.
 #
-# KNOWN, PRE-REGISTERED WEAKNESS -- READ BEFORE BELIEVING A 'not material' VERDICT.
-# sec b.9 records that the four allocation methods agree when an IB bar spans about
-# ONE bin. This rule sets the bin width to the median bar range, which makes the
-# median bar span ~1 bin BY CONSTRUCTION. It therefore pushes the gate toward
-# 'not material' mechanically. That is the price of scale-invariance, it is
-# registered here in advance rather than discovered afterwards, and the defence is
-# the multiplier sensitivity below: the gate is also reported at 0.5x and 2.0x, and
-# a Layer 1 that is only stable at 1.0x is stable by construction, not by evidence.
-BIN_WIDTH_RULE = "median_ib_bar_range"
+# The original rule's own REGISTERED WEAKNESS ("the median bar spans ~1 bin BY
+# CONSTRUCTION", which pushes the sec b.9 gate mechanically toward 'not
+# material') is the same fact stated from the other side. Removing the coarseness
+# and removing the rigged gate are one action, not two.
+#
+# AMENDED PRIMARY (RULE A):
+#
+#     bin_width = (IB_high - IB_low) / N,  N = 20,
+#                 rounded to the nearest tick (half-up), floored at 1 tick
+#
+# Still per session. Still computed from IB bars alone, so still known at IB
+# close and still carries NO lookahead. Still scale-invariant -- and now also
+# invariant to volatility, which the old rule was not: bins-across-IB is 20 by
+# construction instead of 5.9 by accident.
+#
+# THE COST, STATED IN ADVANCE -- READ BEFORE BELIEVING A sec b.9 VERDICT.
+# The median 1-minute IB bar now spans ~3.4 bins instead of ~1. sec b.9 records
+# that the four allocation methods AGREE when a bar spans about one bin. That
+# agreement was previously manufactured by the bin rule. Under Rule A it is not.
+# sec b.9 therefore becomes a real gate for the first time, AND IT MAY NOW FAIL.
+# A sec b.9 failure under Rule A is evidence about Layer 1, not evidence against
+# Rule A, and must not be used to argue the old rule back.
+#
+# PROVENANCE -- THIS IS NOT A BLIND PRE-REGISTRATION ANY MORE.
+# The original rule was fixed before any real bar was loaded. THIS ONE WAS NOT:
+# N = 20 was chosen on 2026-09-15 after the bin-grid census had been computed on
+# real bars (scripts/07_bin_grid_census.py). It was chosen on GEOMETRY ONLY --
+# no PnL, no win rate, no expectancy, no sec b.9 verdict was computed under any
+# candidate rule before the choice, and 07_bin_grid_census.py deliberately does
+# not import run_strategy. That limits the selection risk; it does not remove it.
+# Every Layer 1 output produced under the old rule is VOID. See IVB-SPEC.md
+# sec b.2 AMENDMENT 1.
+BIN_WIDTH_RULE = "ib_range_over_n"
+BIN_WIDTH_N = 20                     # PRIMARY. bins across the IB, by construction.
 BIN_WIDTH_MULT = 1.0                 # PRIMARY. {0.5, 1.0, 2.0} is the sensitivity.
 BIN_WIDTH_FLOOR_TICKS = 1
 BIN_WIDTH_MULT_GRID = (0.5, 1.0, 2.0)
+# The multiplier now reads as an EFFECTIVE BIN COUNT: mult = 0.5 -> ~40 bins,
+# mult = 2.0 -> ~10 bins. Wider bin, fewer bins. Reported, never selected.
 
-# The pre-relative default. NOT a primary any more -- kept only so the fixed-width
-# world can be run as a labelled sensitivity and compared against.
-FIXED_BIN_SIZE_SENSITIVITY = 1.0     # points (4 ticks)
+# Superseded rules. NOT primaries. Kept only so the old worlds can be run as
+# labelled sensitivities (sec g.0.1) and compared against.
+SUPERSEDED_BIN_WIDTH_RULE = "median_ib_bar_range"   # the original sec b.2 primary
+FIXED_BIN_SIZE_SENSITIVITY = 1.0                    # points; the pre-relative default
 
 
-def bin_width(ib_bars: pd.DataFrame, *, mult: float = BIN_WIDTH_MULT,
-              floor_ticks: int = BIN_WIDTH_FLOOR_TICKS) -> float:
-    """sec b.2 pre-registered bin width, in points, for ONE session's IB window.
+def median_ib_bar_range_width(ib_bars: pd.DataFrame, *, mult: float = 1.0,
+                              floor_ticks: int = BIN_WIDTH_FLOOR_TICKS) -> float:
+    """SUPERSEDED sec b.2 primary, kept as a labelled sensitivity only.
 
-    Rounding is half-up and explicit -- numpy rounds halves to even, which would
-    make the width depend on the parity of the tick count.
+    Retained so "what the old rule would have said" is still computable and
+    comparable. Never call this as the primary.
     """
     rng = (ib_bars["high"].to_numpy(float) - ib_bars["low"].to_numpy(float))
     med = float(np.median(rng)) if len(rng) else 0.0
     n_ticks = int(np.floor(med * mult / TICK_SIZE + 0.5))
+    return max(int(floor_ticks), n_ticks) * TICK_SIZE
+
+
+def bin_width(ib_bars: pd.DataFrame, *, mult: float = BIN_WIDTH_MULT,
+              floor_ticks: int = BIN_WIDTH_FLOOR_TICKS,
+              n_bins: int = BIN_WIDTH_N) -> float:
+    """sec b.2 RULE A bin width, in points, for ONE session's IB window.
+
+    bin_width = (IB_high - IB_low) / n_bins, scaled by `mult`, rounded half-up to
+    the nearest tick, floored at 1 tick.
+
+    Rounding is half-up and explicit -- numpy rounds halves to even, which would
+    make the width depend on the parity of the tick count.
+    """
+    if not len(ib_bars):
+        return max(int(floor_ticks), 1) * TICK_SIZE
+    ib_range = float(ib_bars["high"].max()) - float(ib_bars["low"].min())
+    raw = ib_range / float(n_bins)
+    n_ticks = int(np.floor(raw * mult / TICK_SIZE + 0.5))
     return max(int(floor_ticks), n_ticks) * TICK_SIZE
 
 
@@ -110,11 +159,28 @@ class Profile:
 
 
 def _bins(ib_low: float, ib_high: float, bin_size: float) -> tuple[np.ndarray, np.ndarray]:
-    lo = np.floor(ib_low / bin_size) * bin_size
-    hi = np.ceil(ib_high / bin_size) * bin_size
-    if hi <= lo:
-        hi = lo + bin_size
-    n = int(round((hi - lo) / bin_size))
+    """Grid ANCHORED AT ib_low -- defect C2, fixed 2026-09-15.
+
+    It used to be  lo = floor(ib_low / bin_size) * bin_size, i.e. a grid counted
+    from ABSOLUTE PRICE ZERO. value_area() returns VAH / VAL as bin EDGES, so the
+    outermost bins hung outside the IB window by up to one bin_size per side and
+    a value-area edge could be reported OUTSIDE the initial balance that defines
+    it. Measured over 2,365 sessions: VAH > IB_high on 26.0%, VAL < IB_low on
+    22.6%, either on 46.6%. Worst case was bounded at 0.9844 bin_size, exactly as
+    the mechanism predicts. The magnitude tracked the bin width, so the same
+    defect was +1.75 pt in 2015 (invisible on a chart) and +27.25 pt in 2026.
+
+    Anchoring at ib_low makes edges[0] == ib_low EXACTLY, so the low side can no
+    longer hang out at all. The high side still needs a whole number of equal
+    bins to cover the range, so edges[-1] may sit up to one bin_size above
+    ib_high; value_area() clamps the reported VAH/VAL/POC into [ib_low, ib_high]
+    to close that. The grid itself stays uniform, which _span() relies on.
+    """
+    lo = float(ib_low)
+    span = float(ib_high) - lo
+    # tolerance so an exact multiple does not buy a spurious extra empty bin
+    n = int(np.ceil(span / bin_size - 1e-9))
+    n = max(n, 1)
     edges = lo + np.arange(n + 1) * bin_size
     return edges, edges[:-1] + bin_size / 2.0
 
@@ -179,17 +245,32 @@ def allocate(ib_bars: pd.DataFrame, method: str, *, bin_size: float | None = Non
 
 
 def value_area(centers: np.ndarray, weights: np.ndarray, edges: np.ndarray,
-               *, va_pct: float = DEFAULT_VA_PCT) -> tuple[float, float, float]:
-    """POC, VAH, VAL by the standard 2-bin expansion of sec b.3."""
+               *, va_pct: float = DEFAULT_VA_PCT,
+               ib_low: float | None = None,
+               ib_high: float | None = None) -> tuple[float, float, float]:
+    """POC, VAH, VAL by the standard 2-bin expansion of sec b.3.
+
+    `ib_low` / `ib_high` are the TRUE initial balance extremes. VAH, VAL and POC
+    are CLAMPED into [ib_low, ib_high] -- defect C2, see _bins(). A value-area
+    edge outside the window that defines it is not a location, it is a grid
+    artefact. They default to the grid extremes, which is a no-op for a caller
+    that passes a hand-built grid.
+    """
+    lo_b = float(edges[0]) if ib_low is None else float(ib_low)
+    hi_b = float(edges[-1]) if ib_high is None else float(ib_high)
+
+    def clamp(x: float) -> float:
+        return float(min(max(x, lo_b), hi_b))
+
     total = float(weights.sum())
     if total <= 0:
         mid = float(centers[len(centers) // 2])
-        return mid, float(edges[-1]), float(edges[0])
+        return clamp(mid), clamp(float(edges[-1])), clamp(float(edges[0]))
 
     # POC: max weight; tie -> bin closest to IB mid; still tied -> lower bin
     mx = weights.max()
     tied = np.flatnonzero(np.isclose(weights, mx))
-    ib_mid = (edges[0] + edges[-1]) / 2.0
+    ib_mid = (lo_b + hi_b) / 2.0
     poc_i = int(tied[np.lexsort((tied, np.abs(centers[tied] - ib_mid)))[0]])
 
     lo_i = hi_i = poc_i
@@ -211,7 +292,7 @@ def value_area(centers: np.ndarray, weights: np.ndarray, edges: np.ndarray,
             cum += float(weights[new_lo:lo_i].sum())
             lo_i = new_lo
 
-    return float(centers[poc_i]), float(edges[hi_i + 1]), float(edges[lo_i])
+    return clamp(float(centers[poc_i])), clamp(float(edges[hi_i + 1])), clamp(float(edges[lo_i]))
 
 
 def build_profile(ib_bars: pd.DataFrame, *, method: str = "volume_uniform",
@@ -221,7 +302,9 @@ def build_profile(ib_bars: pd.DataFrame, *, method: str = "volume_uniform",
     """`bin_size=None` applies the sec b.2 pre-registered relative rule."""
     bin_size = resolve_bin_size(ib_bars, bin_size, mult=bin_mult)
     edges, centers, w = allocate(ib_bars, method, bin_size=bin_size)
-    poc, vah, val = value_area(centers, w, edges, va_pct=va_pct)
+    poc, vah, val = value_area(centers, w, edges, va_pct=va_pct,
+                               ib_low=float(ib_bars["low"].min()),
+                               ib_high=float(ib_bars["high"].max()))
     return Profile(method=method, bin_size=bin_size, edges=edges, centers=centers,
                    weights=w, poc=poc, vah=vah, val=val, va_pct=va_pct)
 

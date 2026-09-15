@@ -84,6 +84,33 @@ def main() -> int:
           degen and abs((top - bot) - MIN_ZONE_WIDTH) < 1e-9,
           "width {}".format(top - bot))
 
+    # --- 7b. DEFECT C2: the grid is anchored at IB_low, not at price zero ---
+    # The grid used to be counted from absolute price 0.00, so the outer bins hung
+    # outside the IB by up to one bin_size and VAH / VAL -- which are bin EDGES --
+    # could be returned OUTSIDE the window that defines them. Worst real case was
+    # VAH sitting +27.25 pt above IB_high on 2026-01-09. These prices are chosen to
+    # be deliberately MISALIGNED with any round grid, which is when the old code
+    # failed; under the old code edges[0] would be 4207.00, not 4207.37.
+    b4 = bars([(4207.37, 4307.37, 4250.00, 100.0),
+               (4230.00, 4280.00, 4260.00, 900.0),
+               (4240.00, 4270.00, 4255.00, 400.0)])
+    p4 = build_profile(b4, bin_size=5.0)
+    check("C2 the grid starts EXACTLY at IB_low, not at a multiple of bin_size",
+          abs(float(p4.edges[0]) - 4207.37) < 1e-9,
+          "edges[0] = {}".format(p4.edges[0]))
+    check("C2 VAH / VAL / POC are all clamped inside [IB_low, IB_high]",
+          4207.37 <= p4.val <= p4.poc <= p4.vah <= 4307.37,
+          "VAL {} POC {} VAH {}".format(p4.val, p4.poc, p4.vah))
+    check("C2 the top bin may still overhang, but by LESS than one bin_size",
+          0 <= float(p4.edges[-1]) - 4307.37 < 5.0,
+          "top edge {} vs IB_high 4307.37".format(p4.edges[-1]))
+    # A grid whose range is an exact multiple of bin_size must not buy a spare bin.
+    b5 = bars([(100.0, 110.0, 105.0, 100.0)])
+    p5 = build_profile(b5, bin_size=1.0)
+    check("C2 an exact multiple gives exactly n bins, no spurious empty bin",
+          len(p5.centers) == 10 and float(p5.edges[-1]) == 110.0,
+          "{} bins, top edge {}".format(len(p5.centers), p5.edges[-1]))
+
     # --- 8. identical methods must report zero spread -----------------------
     same = {m: build_profile(b3, method="volume_uniform", bin_size=1.0)
             for m in ("a", "b")}

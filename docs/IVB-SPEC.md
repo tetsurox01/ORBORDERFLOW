@@ -841,6 +841,144 @@ is trading an adversely selected subset and the tighter stop cannot save it.
 
 ### b.2 Volume distribution method — and the bin width, which is RELATIVE
 
+> ## AMENDMENT 1 — 2026-09-15. THE PRIMARY BIN WIDTH RULE WAS CHANGED.
+>
+> **This amendment was made AFTER real bars were seen. It is not a blind
+> pre-registration and must never be quoted as one.** Everything below the
+> amendment box is the ORIGINAL §b.2, kept verbatim as the record of what was
+> registered blind. Read it in the past tense.
+>
+> ### What was registered blind
+>
+> ```
+> bin_width = median 1-minute bar range over THIS session's IB window
+> ```
+>
+> ### What was measured on real bars
+>
+> `scripts/07_bin_grid_census.py`, 2,365 sessions with a definable IB, 2015-01-01
+> to 2024-05-01 plus the unsealed 2026-01-01 to 2026-08-31. The 412 sealed
+> FORWARD_HOLDOUT sessions 2024-05-02 to 2025-12-31 were **not** read, so 2024 is
+> partial and 2025 is absent. No PnL, no win rate, no expectancy and no §b.9
+> verdict was computed under any candidate rule; the census does not import
+> `run_strategy`.
+>
+> - Median bins across the IB was **5.28 to 5.97 in EVERY year 2015 to 2026**,
+>   while median NQ price went 4,428 to 27,782 (a 6.3x move).
+> - `r(bins_across_IB, price)` = **-0.019** (Pearson), **-0.025** (Spearman).
+>   **The rule was scale-invariant exactly as registered.** The hypothesis that it
+>   had drifted with the index was tested and is **wrong**.
+> - It was nevertheless **uselessly coarse, and always had been**: **96.0%** of
+>   sessions had fewer than 10 bins, **84.5%** fewer than 8.
+> - The cause is **arithmetic, not drift**. For a near-random walk the range of
+>   `N` bars is about `sqrt(N)` bar heights, so setting `bin = median bar height`
+>   yields about `sqrt(30)` = 5.48 bins for a 30-minute IB at any price in any
+>   regime. Measured p50 of `ib_range / med_ib_bar_range` = **5.85**.
+> - No multiplier rescues it: the registered `{0.5, 1.0, 2.0}` axis spans only
+>   about 2.7 to 11 bins.
+> - §b.2's own registered weakness — "the median bar spans ~1 bin **by
+>   construction**", which pushes §b.9 mechanically toward `not material` — is the
+>   same fact stated from the other side. The coarseness and the rigged gate are
+>   one defect, not two.
+>
+> ### The amended primary — RULE A
+>
+> ```
+> bin_width = (IB_high - IB_low) / N,   N = 20
+>             rounded to the nearest tick (half-up), floored at 1 tick
+>
+> bin_width_rule   = ib_range_over_n
+> bin_width_n      = 20           PRIMARY
+> bin_width_mult   = 1.0          PRIMARY; {0.5, 1.0, 2.0} reported, never selected
+> bin_width_floor  = 1 tick
+> ```
+>
+> Still **per session**. Still computed from IB bars alone, so still known at IB
+> close and still carries **no lookahead**. Still scale-invariant, and now also
+> invariant to bar height, which the old rule was not. `bin_width_mult` now reads
+> as an effective bin count: 0.5 gives about 40 bins, 2.0 about 10.
+>
+> **Measured after the fix**, same 2,365 sessions: median bins across the IB =
+> **19.7 to 20.05 in every year**, p10 17.9, p90 22.3.
+>
+> ### The cost of Rule A, stated in advance
+>
+> The median 1-minute IB bar now spans **about 3.4 bins** instead of about 1.
+> §b.9 records that the four allocation methods agree when a bar spans about one
+> bin. That agreement was previously manufactured by the bin rule. Under Rule A it
+> is not.
+>
+> > **§b.9 becomes a real gate for the first time, and it may now FAIL.** A §b.9
+> > failure under Rule A is evidence about Layer 1, not evidence against Rule A,
+> > and must not be used to argue the old rule back. Reverting to a rule that
+> > forces the gate to pass would be selection on the gate's outcome — the exact
+> > failure the gate exists to prevent.
+>
+> ### Residual: tick quantisation
+>
+> Rule A is exactly scale-invariant in real arithmetic and only approximately so
+> on a tick grid. `bins_across_IB = ceil(ib_range / round_tick(ib_range / 20))`,
+> which is 20 when `ib_range / 20` is a clean multiple of the tick and drifts up
+> toward about 25 as `ib_range / 20` approaches one tick. It bites only on very
+> small IB ranges; on real NQ the raw bin is 6 to 60 ticks, so the effect is a few
+> percent. It is bounded below by 20 and above by about 25, and it never inverts.
+> Pinned by a control test.
+>
+> ### Selection risk, not denied
+>
+> `N = 20` was chosen on geometry alone, with no performance quantity computed
+> under any candidate. That **limits** the selection risk; it does not remove it.
+> Two other candidate rules were measured and rejected, recorded here so the
+> choice is auditable rather than presented as the only option:
+>
+> | rule | bins p10 / p50 / p90 | why not |
+> |---|---|---|
+> | **A** `ib_range / 20` | 18.8 / 20.0 / 21.0 | **chosen.** Flat by construction. |
+> | B `3 bp of price` | 9.7 / 18.6 / 36.5 | scale-invariant in price, but 3.8x spread across volatility |
+> | C `3% of prior ATR` | 7.0 / 9.9 / 14.8 | about 2x spread, and makes one ATR drive both Layer 1 geometry and the `min_ib_range_atr` filter |
+>
+> ### Consequences
+>
+> 1. **Every Layer 1 output produced under the old rule is VOID.** That includes
+>    all 21 `output/charts/2026-01/` NQ charts and their `index.md`, marked void
+>    on 2026-09-15 and deliberately not redrawn.
+> 2. `S_filled` and every per-trade Layer 1 statistic move, for the reason already
+>    documented later in this section: the profile decides which sessions become
+>    trades at all. No Layer 1 trade count from before this date is comparable to
+>    one after it.
+> 3. §b.9 has still **never been run on real bars**, under either rule.
+> 4. Layer 0 is untouched. The P0 result (1,971 trades, expectancy -$2.882 per
+>    trade, PF 0.919) builds no profile and is unaffected by this amendment.
+>
+> ## AMENDMENT 2 — 2026-09-15. DEFECT C2, the zero-anchored grid.
+>
+> A separate bug, found in the same census and fixed at the same time. It is
+> **not** a consequence of the width rule and would have needed fixing whatever
+> was ruled on the width.
+>
+> `ivb/profile.py::_bins()` built the grid as
+> `lo = floor(ib_low / bin_size) * bin_size` — a grid counted from **absolute
+> price zero**, not from the IB. `value_area()` returns VAH and VAL as bin
+> **edges**, so the outermost bins hung outside the IB window by up to one
+> `bin_size` per side, and a value-area edge could be reported **outside the
+> initial balance that defines it**.
+>
+> Measured, 2,365 sessions: `VAH > IB_high` on **26.0%**, `VAL < IB_low` on
+> **22.6%**, either on **46.6%**. Worst case bounded at **0.9844 x bin_size**,
+> exactly as the mechanism predicts.
+>
+> **The magnitude tracked the bin width, so only its visibility ever changed.**
+> The same bug measured ovHi p90 = **+1.75 pt** in 2015 (invisible on a chart) and
+> **+27.25 pt** on 2026-01-09 (0.95 of that session's 28.75 pt bin).
+>
+> **Fix.** The grid is anchored at `ib_low`, so `edges[0] == ib_low` exactly. A
+> whole number of equal bins must still cover the range, so `edges[-1]` may sit up
+> to one `bin_size` above `ib_high`; `value_area()` therefore **clamps** the
+> reported VAH, VAL **and POC** into `[IB_low, IB_high]`. The grid itself stays
+> uniform, which `_span()` relies on. Re-measured after the fix: `outIB%` = **0.0
+> in every year**, `max over_high_bins` = **0.0000**.
+
+
 #### The bin width is a function of bar height, not a number of points
 
 A bin width fixed in **points** is not the same object at both ends of the sample.
@@ -1971,7 +2109,7 @@ across deciles, that is a Layer 3 feature, not a new filter.
 | Param | Default | Range | Notes |
 |---|---|---|---|
 | `profile_source` | `volume_uniform` | {`volume_uniform`, `volume_triangular`, `volume_close_only`, `tpo_minute`} | |
-| **`bin_width_rule`** | **`median_ib_bar_range`** | — | **§b.2. Bin width is RELATIVE, pre-registered blind.** `bin_width` = median 1-minute bar range over this session's IB window, rounded to the nearest tick, floored at 1 tick. A width fixed in points is a different fraction of a bar in 2015 and in 2026, which would make the §b.9 verdict a function of the calendar. |
+| **`bin_width_rule`** | **`ib_range_over_n`** (`bin_width_n` = 20) | — | **§b.2 AMENDMENT 1, 2026-09-15 — CHANGED AFTER REAL BARS WERE SEEN, NOT BLIND.** `bin_width` = `(IB_high - IB_low) / 20`, rounded to the nearest tick, floored at 1 tick. Relative, per session, no lookahead. Supersedes the blind primary `median_ib_bar_range`, which was scale-invariant as registered but delivered ~5.9 bins across the IB in every year at every price (`sqrt(30)` arithmetic, not drift) and made the §b.9 gate pass by construction. The old rule stays runnable as a labelled sensitivity via `profile.median_ib_bar_range_width()`. Every Layer 1 output from before this date is VOID. |
 | **`bin_width_mult`** | **1.0** | {0.5, 1.0, 2.0} | **Sensitivity axis, never optimised (§g.0.1).** The primary makes the median bar span ~1 bin by construction, which is the condition that forces the four §b.9 methods to agree — so the 0.5× and 2.0× rows must be read next to any `not material` verdict. **For the §b.9 gate the three rows resolve by the pre-registered rule: `MATERIAL` at any one of them makes the verdict `MATERIAL`; a pass needs all three clear.** |
 | `bin_width_floor_ticks` | 1 | — | A bin narrower than a tick is meaningless. |
 | `bin_size_pts` | 1.0 | 0.25 – 2.0 | **No longer a primary.** The pre-relative fixed width, kept only as a labelled comparison row. |

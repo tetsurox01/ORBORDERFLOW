@@ -69,8 +69,14 @@ class Config:
     # Bin width is RELATIVE and pre-registered blind (sec b.2 / g.1). `bin_size_pts`
     # is not a parameter any more; the rule is. An explicit float override is a
     # labelled sensitivity only (sec g.0.1).
-    bin_width_rule: str = "median_ib_bar_range"
+    # AMENDED 2026-09-15 to Rule A (sec b.2 AMENDMENT 1). The old primary,
+    # "median_ib_bar_range", yielded ~5.9 bins across the IB at every price level
+    # in every year -- sqrt(30) arithmetic, not scale drift. Superseded, kept
+    # runnable as a labelled sensitivity via profile.median_ib_bar_range_width().
+    bin_width_rule: str = "ib_range_over_n"
+    bin_width_n: int = 20                # PRIMARY. bins across the IB, by construction.
     bin_width_mult: float = 1.0          # PRIMARY. {0.5, 1.0, 2.0} = sensitivity.
+                                         # mult 0.5 -> ~40 bins, 2.0 -> ~10 bins.
     bin_width_floor_ticks: int = 1
     va_pct: float = 0.70
     hard_stop_ticks: int = 8             # sec b.10: FREE PARAMETER, swept, never tuned
