@@ -13,6 +13,7 @@ works, so this file does not import the research package.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import matplotlib
@@ -164,12 +165,29 @@ def draw_profile(ax, profile, *, vah=None, val=None, poc=None,
     ax.set_xticks([])
 
 
+def _fit_size(text: str, base: float, fits_at_base: int, floor: float) -> float:
+    """Shrink a font so `text` fits a line `fits_at_base` characters wide.
+
+    Character-count scaling, not a text-extent measurement: matplotlib can only
+    measure a rendered artist, and the figure is not drawn yet at this point.
+    The chart titles are one font and one figure width, so the linear
+    approximation is adequate and has no failure mode worse than a slightly
+    small title. `floor` stops it shrinking into illegibility -- past that point
+    the title is too long and belongs in the note block instead.
+    """
+    n = len(text or "")
+    if n <= fits_at_base:
+        return base
+    return max(floor, base * fits_at_base / n)
+
+
 # ----------------------------------------------------------------------------
 # CHART 1 -- one annotated session
 # ----------------------------------------------------------------------------
 def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
                   profile=None, *, title: str = "", subtitle: str = "",
-                  extra_notes: list | None = None) -> plt.Figure:
+                  extra_notes: list | None = None,
+                  fit_title: bool = False) -> plt.Figure:
     """One session: IB box, fixed-range profile, levels, and the trade.
 
     bars    session dataframe with ts_et / open / high / low / close / volume,
@@ -356,9 +374,18 @@ def chart_session(bars: pd.DataFrame, levels: dict, trade: dict | None = None,
                  bbox=dict(boxstyle="round,pad=0.55", facecolor="#f7f9fb",
                            edgecolor="#b8c1cc"))
 
-    fig.suptitle(title, fontsize=13, y=0.982)
+    # fit_title is OPT-IN. suptitle does not wrap and does not shrink, so a long
+    # title silently runs off both edges of the PNG -- the caveat at the front of
+    # it is then the first thing lost. Callers that pass a long title ask for the
+    # shrink; every existing caller keeps fontsize 13 exactly as before.
+    t_size, s_size = 13, 9
+    if fit_title:
+        t_size = _fit_size(title, 13, 118, 7.0)
+        s_size = _fit_size(subtitle, 9, 170, 5.5)
+    fig.suptitle(title, fontsize=t_size, y=0.982)
     if subtitle:
-        fig.text(0.5, 0.948, subtitle, fontsize=9, color="#555555", ha="center")
+        fig.text(0.5, 0.948, subtitle, fontsize=s_size, color="#555555",
+                 ha="center")
     return fig
 
 
@@ -698,9 +725,29 @@ def chart_cell_counts(counts_by_design: dict, *, min_obs: int, title: str = "",
 
 
 # ----------------------------------------------------------------------------
-def save(fig: plt.Figure, path) -> Path:
+def save(fig: plt.Figure, path, *, attempts: int = 5) -> Path:
+    """Write the figure, retrying a transient Windows write failure.
+
+    On Windows a freshly created PNG is intermittently refused with
+    OSError(errno 22, "Invalid argument") while something else holds it open --
+    a virus scanner reading the file back, the indexer, a sync client, or an
+    image viewer the user has parked on the folder. It is not deterministic: the
+    same run fails on a different file each time, and a plain re-run succeeds.
+
+    The retry is BOUNDED and the last failure is RE-RAISED. A chart that cannot
+    be written must fail loudly, because a month census with a silently missing
+    session is no longer a census, and the index would still list the row.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(p, dpi=140, facecolor="white")
+    for i in range(attempts):
+        try:
+            fig.savefig(p, dpi=140, facecolor="white")
+            break
+        except OSError:
+            if i == attempts - 1:
+                plt.close(fig)
+                raise
+            time.sleep(0.4 * (i + 1))
     plt.close(fig)
     return p

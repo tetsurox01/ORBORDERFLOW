@@ -369,10 +369,18 @@ What this entry adds is the thing UNSEAL #1 does not record: **which months have
 actually been drawn and seen.** "In-sample by decision" and "looked at" are not
 the same fact, and only the second one can be checked against the files on disk.
 
-| Month | Sessions drawn | Viewed on | Output | Vendor-degraded sessions |
-|---|---|---|---|---|
-| **2026-01** | 21 (census, nothing skipped) | 2026-09-15, **twice** | `output/charts/2026-01/` | none |
-| **2026-02** | 20 (census, nothing skipped) | **2026-09-15** | `output/charts/2026-02/` | none |
+| Month | Sessions drawn | Viewed on | Output | Front month | Vendor-degraded RTH sessions |
+|---|---|---|---|---|---|
+| **2026-01** | 21 (census, nothing skipped) | 2026-09-15, **twice** | `output/charts/2026-01/` | NQH6 | none |
+| **2026-02** | 20 (census, nothing skipped) | **2026-09-15** | `output/charts/2026-02/` | NQH6 | none |
+| **2026-03** | 22 (census, nothing skipped) | **2026-09-15** | `output/charts/2026-03/` | NQH6 → **NQM6**, roll effective 2026-03-17 | **2026-03-16** |
+| **2026-04** | 21 (census, nothing skipped) | **2026-09-15** | `output/charts/2026-04/` | NQM6 | **2026-04-10** |
+
+All four months were drawn by `scripts/06_month_charts.py` in the same format,
+under the fixed §b.2 geometry (AMENDMENT 1 and AMENDMENT 2). 2026-01 and 2026-02
+were redrawn on 2026-09-15 after 2026-03 and 2026-04 were added, so that all four
+carry the same `contract` column and the same chart layout. That redraw changed
+presentation only: the bars, the rules and every level are identical.
 
 **2026-01 was drawn twice, and the first draw is VOID.** The first set was drawn
 under the ORIGINAL §b.2 bin-width rule and the zero-anchored grid. Both were
@@ -383,14 +391,46 @@ PNGs are archived byte-untouched in `output/charts/2026-01/PRE_RULE_A/`, and
 replaced it. **Voiding a chart does not re-seal the session it drew.** Those bars
 have been seen; the redraw changes what was drawn, not what was looked at.
 
-**Vendor-degraded sessions in these two months: none.** `data/raw/degraded_days.csv`
-lists no session date in 2026-01 or 2026-02, and a live re-check of
-`metadata.get_dataset_condition` for `GLBX.MDP3` over 2026-02-01 → 2026-02-28 on
-2026-09-15 returned 28 days, all `available`. The re-check was a free metadata
-call; no data was purchased. The nearest degraded dates either side —
-`2026-01-31`, `2026-03-15`, `2026-03-21`, `2026-05-24`, `2026-08-29` — are all
-marked `NOT_A_SESSION`, and the nearest degraded RTH session inside the unsealed
-range is `2026-03-16`, which is in neither month.
+**Vendor data quality across the four months.** `metadata.get_dataset_condition`
+was re-checked live for `GLBX.MDP3` on 2026-09-15 before each month was drawn —
+2026-02-01 → 2026-02-28 (28 days), 2026-03-01 → 2026-03-31 (31 days) and
+2026-04-01 → 2026-04-30 (30 days). These were free metadata calls; **no data was
+purchased.** The live answer matched the committed `data/raw/degraded_days.csv`
+exactly, date for date and `last_modified` for `last_modified`, so the vendor has
+not silently re-stated any of these days since the artifact was written. That
+match is the point of committing the artifact (§0.2.4) and it is the first time
+it has actually been exercised.
+
+Result:
+
+- **2026-01, 2026-02 — no degraded session.**
+- **2026-03 — `2026-03-16` is degraded** (vendor `last_modified` 2026-06-05).
+  It is drawn with its full geometry and a `vendor_degraded` filter banner, and
+  the index records no exit reason, no R and no net for it: P0 does not trade it.
+  `2026-03-15` and `2026-03-21` are also degraded but are `NOT_A_SESSION`.
+- **2026-04 — `2026-04-10` is degraded** (vendor `last_modified` 2026-05-21),
+  handled the same way.
+
+Note that `2026-03-16` is **both** the degraded session and the last NQH6 session
+before the quarterly roll. The two flags are independent and both are shown.
+
+**The quarterly roll inside 2026-03 is marked on the charts.** The front month
+goes NQH6 → NQM6 with `roll_effective` on **2026-03-17**, per
+`data/roll_calendar_6635298.csv`. Every chart in all four months now prints the
+front symbol and `instrument_id` of the session it draws, and the roll session
+carries the handover in its title, its subtitle and its `CONTRACT` block; the
+`index.md` tables gained a `contract` column with the handover row marked. This
+matters because NQH6 and NQM6 do not trade at the same absolute price, so a level
+read across that boundary by eye is wrong. `front_month_bars()` takes one
+contract per session and never splices inside a session (Series A), so the
+handover falls BETWEEN charts and never inside one.
+
+**P0 applies no roll-day filter.** `roll_day_flag` is true on 2026-03-16 and
+2026-03-17, and `filter_reason()` does not consult it, so 2026-03-17 is traded
+like any other session (2026-03-16 is dropped for being degraded, not for being
+a roll day). Whether a roll session should be filtered is an **open question**,
+recorded here because it is now visible on a chart; nothing in this entry settles
+it.
 
 > **Correction to a statement in UNSEAL #1, recorded here rather than edited into
 > it, because this log is append-only.** UNSEAL #1 says `scripts/05_unseal_charts.py`
@@ -401,18 +441,29 @@ range is `2026-03-16`, which is in neither month.
 > only those two, read the unsealed range. The original sentence stands unedited
 > above; this note is the amendment.
 
-**Still NOT run on these bars, in either month:** no Step 1–5 evaluation, no
-`b9_sensitivity()`, no `run_strategy()`, no aggregate of any kind — no win rate,
-no expectancy, no fill rate, no counts by outcome, no monthly total, and no
-combined table across the two months. Each `index.md` sums nothing. The output is
-per-session pictures and the per-session numbers printed on them.
+**Still NOT run on these bars, in any of the four months:** no Step 1–5
+evaluation, no `b9_sensitivity()`, no `run_strategy()`, no aggregate of any kind
+— no win rate, no expectancy, no fill rate, no counts by outcome, no monthly
+total, and **no table combining any two of the months**. Each `index.md` sums
+nothing. The output is per-session pictures and the per-session numbers printed
+on them.
+
+This restraint gets harder to hold, not easier, as months accumulate: four months
+of per-session rows sitting in one directory tree is exactly the shape that
+invites a quick tally. **A tally of these rows would be an in-sample result on
+unsealed holdout data, computed with a resolver that has no unit tests, no cost
+model and no control** (`illustrate_layer1_trade()`, drawing only). It would not
+be a weak result; it would be an uninterpretable one.
 
 **Remaining sealed range is UNCHANGED by this entry:**
 
 ```
 FORWARD_HOLDOUT   2024-05-02 .. 2025-12-31     STILL SEALED   412 sessions
                   2026-01-01 .. 2026-08-31     UNSEALED #1    165 sessions
-                                                              (2026-01, 2026-02 drawn)
+                                                              (2026-01 .. 2026-04 drawn:
+                                                               21 + 20 + 22 + 21 sessions;
+                                                               2026-05 .. 2026-08 unsealed
+                                                               but not yet drawn)
 BACKWARD_HOLDOUT  2010-07-01 .. 2014-12-31     DEAD -- unfit, see sec 0.2.3
 ```
 
@@ -2979,6 +3030,199 @@ a control that beat the strategy. That asymmetry is not coincidence — a defect
 makes a number worse gets investigated immediately, and a defect that makes a number
 better gets believed. The only defence is auditing the numbers you *like*, which is
 what §i.4.3 and §i.4.4 are.
+
+---
+
+## (j) PROP FIRM CONSTRAINTS — hard limits, not preferences
+
+Added 2026-09-15. This section exists because the account that would execute this
+strategy is an **FTMO** account, and FTMO imposes account-level loss limits that
+terminate the account when breached. A breached limit is not a bad day. It ends
+the account, and no subsequent profit recovers it.
+
+Every other constraint in this document is a research choice that could be
+re-registered with an argument. **These cannot.** They are imposed from outside,
+they are checked by someone else's software, and they do not negotiate.
+
+### j.0 The instrument mismatch comes first
+
+**The arithmetic in this section is computed on CME NQ, which is not the
+instrument the FTMO account can trade.** FTMO quotes a CFD. A CFD has a different
+contract size, a different tick, a spread instead of a commission, and financing
+charges. See `docs/PROVENANCE-CHECKS.md` §E.
+
+So j.2–j.4 below answer the question *"what would P0's risk do to these limits?"*
+using the researched instrument, because that is the only instrument any measured
+number in this repo describes. They are a **lower bound on the problem**, not a
+plan. The real numbers require the FTMO symbol's own contract specification, and
+that probe has not been run.
+
+### j.1 The limits — RECORD THE EXACT WORDING BEFORE SIZING ANYTHING
+
+```
+daily_loss_limit      = [TO FILL - % and the exact measurement basis]
+max_drawdown_limit    = [TO FILL - % and whether STATIC or TRAILING]
+account_size          = [TO FILL]
+```
+
+**Working assumption, from the account holder: a daily loss limit and a TRAILING
+maximum drawdown.**
+
+**FLAGGED DISCREPANCY — resolve this before any sizing arithmetic is trusted.**
+FTMO's published rules, as I understand them, use a **static** maximum loss
+measured from the *initial* account balance, together with a daily loss limit
+measured against the balance/equity at the day's start. Other firms — Topstep and
+Apex among them — use a **trailing** drawdown that follows the equity high-water
+mark upward. I have not verified FTMO's current wording and I am not going to
+assert it from memory.
+
+The distinction is not cosmetic and it is not a detail:
+
+| | STATIC max loss | TRAILING max drawdown |
+|---|---|---|
+| floor is set by | the initial balance, once | the running equity high-water mark |
+| a winning run | widens your room | moves the floor up, room stays fixed |
+| giving back open profit | costs nothing against the limit | can breach the limit at a balance ABOVE where you started |
+| correct response | risk a fixed fraction of initial | risk a fraction of *distance to the trailing floor*, recomputed continuously |
+
+**Under a trailing rule, a profitable month can be terminated by a drawdown that a
+static rule would not even register.** The two require different sizing formulas.
+Pin the exact wording from FTMO's current rules page into this section, verbatim
+and dated, before anything is sized.
+
+### j.2 The collision — P0's stop is the IB, and the IB is not a constant
+
+P0 sets the stop at the **opposite IB extreme** (`baseline_stop =
+"opposite_ib_extreme"`, `ivb/sessions.py::stop_level`), offset by
+`breakout_buffer_ticks = 1`. Entry is at the breakout, near the IB's own edge.
+Therefore:
+
+> **Risk per trade, in points, is approximately the IB range itself.**
+
+The IB range is a property of the session, not a parameter. It is unknown until
+09:59 ET and it is not stable. Three real sessions, all `NQM6`, all inside one
+month, per-session figures only:
+
+| session | IB range | risk on 1 NQ ($20/pt) | risk on 1 MNQ ($2/pt) |
+|---|---|---|---|
+| 2026-04-22 | 81.25 pt | $1,625 | $162.50 |
+| 2026-04-15 | 90.00 pt | $1,800 | $180.00 |
+| 2026-04-30 | **288.50 pt** | **$5,770** | $577.00 |
+| user-cited session | 46.75 pt | $935 | $93.50 |
+
+**2026-04-30 against 2026-04-22 is a 3.55× swing in dollar risk at identical
+position size, eight sessions apart.**
+
+**The headline consequence, stated as a number:**
+
+> On a $100,000 account with a 5% daily loss limit ($5,000), **a single
+> one-contract NQ trade on 2026-04-30 would have risked $5,770 — a breach of the
+> daily limit on its own, at the smallest size the instrument allows.**
+
+There is no position-sizing rule that fixes that, because the size was already
+one. The only remedies are a smaller contract (MNQ: $577, fine), a larger account,
+or a stop that is not the IB. **All three change the strategy or its economics,
+and none of them may be adopted by drift. Each is a registered change.**
+
+### j.3 The sizing coupling — a variable risk against a fixed limit
+
+Prop limits are denominated in **fixed dollars**. P0's risk is denominated in
+**session-dependent points**. These do not compose.
+
+```
+dollar_risk(session) = N_contracts x point_value x ib_range(session)
+constraint           : dollar_risk(session) <= daily_loss_limit
+                       cumulative losses    <= max_drawdown_limit
+```
+
+`ib_range(session)` is unknown until the IB closes. Two ways out, and they are not
+equivalent:
+
+1. **Fixed `N`.** Simple, matches the research (which runs at fixed 1 contract),
+   and lets dollar risk swing by the full 3.55× measured above. The limit must
+   then be sized against the *worst* plausible IB range, which means the typical
+   trade is far smaller than the account could carry.
+2. **Volatility-scaled `N = floor(target_dollar_risk / (point_value x ib_range))`.**
+   Holds dollar risk roughly constant. **But this is a change to the strategy, not
+   to its packaging.** It alters the trade population — sessions with a wide IB get
+   less weight, and IB range is already a registered conditioning feature for Layer
+   3's excursion distribution (§ Layer 3). Every result in this repo was produced at
+   fixed 1 contract. Re-sizing invalidates the mapping from measured R to measured
+   dollars, and the study would have to be re-run.
+
+Integer granularity bites option 2 hard at small size. At MNQ ($2/pt) and a $500
+target risk, 2026-04-15's 90 pt IB gives `500 / 180 = 2.8 -> 2 contracts` (actual
+risk $360, 28% under target) and 2026-04-30's 288.5 pt IB gives
+`500 / 577 = 0.87 -> 0 contracts`, i.e. **the trade is not takeable at all**.
+A sizing rule that silently drops the widest-IB sessions is a filter. An
+unregistered filter on a conditioning feature is exactly the kind of quiet
+selection §(g) exists to forbid.
+
+### j.4 Which limit actually binds — the one-shot rule matters here
+
+§a.3 permits **one trade per session**, and §a.4's time stop is flat at 11:30 ET.
+That changes which limit is the live one:
+
+- **The daily loss limit is rarely reached by accumulation**, because there is
+  only one trade to accumulate. It is reached, if at all, by a **single wide-IB
+  session** — precisely the 2026-04-30 case in j.2. It is a *tail* constraint, and
+  the tail is a known, measurable feature (`ib_range`), not a surprise.
+- **The maximum drawdown limit is reached by a losing streak**, and that is the
+  binding constraint. On a $100,000 account with a $10,000 max loss and 1 NQ
+  contract at ~$1,800 per stop, roughly **5–6 consecutive worst-case stop-outs
+  exhaust the account.**
+
+**And here is the part that is not a sizing question at all.** P0's measured
+result is **1,971 trades, expectancy −$2.882 per trade, profit factor 0.919**.
+For a system with negative expectancy, a maximum-drawdown limit is not a risk
+control. **It is a countdown.** The expected path is toward the floor; position
+sizing only sets the clock speed. Sizing smaller does not improve the destination,
+it postpones it and pays more commission on the way.
+
+### j.5 What this section does NOT do
+
+- It does **not** rescue P0. Kill criteria say stop, and they still say stop. A
+  constraint layer over a negative-expectancy system caps the rate of loss, not
+  its sign.
+- It does **not** authorise any live implementation. See
+  `docs/PROVENANCE-CHECKS.md` §D.4 for the dependency chain.
+- It does **not** settle the instrument mismatch (j.0). It records it.
+
+### j.6 Registered rules for any future live design
+
+Pre-registered now, before any live work, so they cannot be relaxed later by the
+person who wants the trade:
+
+1. **The limits are hard constraints, checked BEFORE order submission.** A design
+   that can submit an order whose maximum loss exceeds the remaining daily
+   allowance is defective, regardless of how unlikely the case looks.
+2. **Worst-case risk is computed from the stop LEVEL, not from an average.** For
+   P0 that is the full IB range plus buffer plus assumed slippage, every session,
+   with no appeal to typical behaviour.
+3. **A session whose worst-case risk exceeds the remaining allowance at the
+   minimum tradeable size is a NO-TRADE.** It is recorded as a distinct exit
+   reason — it is not a `no_fill`, it is not a `filtered`, and it must not be
+   quietly dropped from the population. Under §c.1 the exit taxonomy is a closed
+   enum and its frequencies are a headline number; a new reason is added to that
+   enum, not hidden.
+4. **Any sizing rule that depends on `ib_range` is a STRATEGY CHANGE** (j.3) and
+   requires the study to be re-run at that sizing before its dollar results are
+   quoted.
+5. **Under a trailing drawdown, the room available is recomputed against the
+   high-water mark on every session**, never against the starting balance. If the
+   rule turns out to be static instead, this is relaxed — but only after j.1's
+   wording is pinned.
+
+### j.7 Open items in this section
+
+1. `account_size`, `daily_loss_limit`, `max_drawdown_limit` — all `[TO FILL]`.
+2. **Static or trailing?** j.1. Blocks every sizing formula here.
+3. FTMO's Nasdaq symbol specification — contract size, tick, spread, financing.
+   `docs/PROVENANCE-CHECKS.md` §E. Blocks translating j.2's NQ dollars into FTMO
+   dollars.
+4. Whether FTMO's account rules impose any **holding-period or news restriction**
+   that touches a 09:30–11:30 ET window. Believed not to, for an intraday
+   strategy flat by the time stop — unverified, and cheap to verify.
 
 ---
 

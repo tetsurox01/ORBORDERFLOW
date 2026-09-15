@@ -14,29 +14,31 @@ The sec b.9 profile-method sensitivity gate has NEVER been run on real bars, so 
 
 Filtered sessions are drawn but carry no exit reason, R or net: P0 never takes those trades.
 
-| date | outcome | direction | exit reason | R achieved | net |
-|---|---|---|---|---|---|
-| 2026-01-02 | no_fill | SHORT | - | - | - |
-| 2026-01-05 | no_fill | LONG | - | - | - |
-| 2026-01-06 | no_fill | LONG | - | - | - |
-| 2026-01-07 | time_stop | LONG | time_stop | +0.33R | +24.40 pt |
-| 2026-01-08 | time_stop | SHORT | time_stop | -0.16R | -18.60 pt |
-| 2026-01-09 | hard_stop | SHORT | hard_stop | -1.01R | -94.35 pt |
-| 2026-01-12 | time_stop | LONG | time_stop | +0.31R | +25.65 pt |
-| 2026-01-13 | tp1 | SHORT | tp1 | +1.98R | +101.90 pt |
-| 2026-01-14 | time_stop | SHORT | time_stop | +0.19R | +22.90 pt |
-| 2026-01-15 | hard_stop | SHORT | hard_stop | -1.02R | -63.85 pt |
-| 2026-01-16 | no_fill | SHORT | - | - | - |
-| 2026-01-19 | filtered:half_day | LONG | n/a (filtered) | n/a (filtered) | n/a (filtered) |
-| 2026-01-20 | time_stop | LONG | time_stop | +0.80R | +61.15 pt |
-| 2026-01-21 | no_fill | LONG | - | - | - |
-| 2026-01-22 | time_stop | SHORT | time_stop | -0.74R | -74.60 pt |
-| 2026-01-23 | no_fill | LONG | - | - | - |
-| 2026-01-26 | time_stop | LONG | time_stop | +0.77R | +65.15 pt |
-| 2026-01-27 | no_fill | LONG | - | - | - |
-| 2026-01-28 | no_fill | SHORT | - | - | - |
-| 2026-01-29 | no_fill | SHORT | - | - | - |
-| 2026-01-30 | hard_stop | SHORT | hard_stop | -1.02R | -64.10 pt |
+The `contract` column is the front month those bars come from. One contract per session, never spliced inside a session. Where a quarterly roll falls inside the month, the handover row is marked **ROLL**: the two contracts trade at DIFFERENT absolute prices, so a level must not be carried across that row by eye. P0 applies no roll-day filter.
+
+| date | contract | outcome | direction | exit reason | R achieved | net |
+|---|---|---|---|---|---|---|
+| 2026-01-02 | NQH6 | no_fill | SHORT | - | - | - |
+| 2026-01-05 | NQH6 | no_fill | LONG | - | - | - |
+| 2026-01-06 | NQH6 | no_fill | LONG | - | - | - |
+| 2026-01-07 | NQH6 | time_stop | LONG | time_stop | +0.33R | +24.40 pt |
+| 2026-01-08 | NQH6 | time_stop | SHORT | time_stop | -0.16R | -18.60 pt |
+| 2026-01-09 | NQH6 | hard_stop | SHORT | hard_stop | -1.01R | -94.35 pt |
+| 2026-01-12 | NQH6 | time_stop | LONG | time_stop | +0.31R | +25.65 pt |
+| 2026-01-13 | NQH6 | tp1 | SHORT | tp1 | +1.98R | +101.90 pt |
+| 2026-01-14 | NQH6 | time_stop | SHORT | time_stop | +0.19R | +22.90 pt |
+| 2026-01-15 | NQH6 | hard_stop | SHORT | hard_stop | -1.02R | -63.85 pt |
+| 2026-01-16 | NQH6 | no_fill | SHORT | - | - | - |
+| 2026-01-19 | NQH6 | filtered:half_day | LONG | n/a (filtered) | n/a (filtered) | n/a (filtered) |
+| 2026-01-20 | NQH6 | time_stop | LONG | time_stop | +0.80R | +61.15 pt |
+| 2026-01-21 | NQH6 | no_fill | LONG | - | - | - |
+| 2026-01-22 | NQH6 | time_stop | SHORT | time_stop | -0.74R | -74.60 pt |
+| 2026-01-23 | NQH6 | no_fill | LONG | - | - | - |
+| 2026-01-26 | NQH6 | time_stop | LONG | time_stop | +0.77R | +65.15 pt |
+| 2026-01-27 | NQH6 | no_fill | LONG | - | - | - |
+| 2026-01-28 | NQH6 | no_fill | SHORT | - | - | - |
+| 2026-01-29 | NQH6 | no_fill | SHORT | - | - | - |
+| 2026-01-30 | NQH6 | hard_stop | SHORT | hard_stop | -1.02R | -64.10 pt |
 
 Charts: `C:/Users/user/Desktop/ORB + Order flow/output/charts/2026-01`
 

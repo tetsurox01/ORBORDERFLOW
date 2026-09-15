@@ -82,11 +82,13 @@ OUTCOME_LABEL = {
     "close_invalidation": "CLOSE INVALIDATION",
     "time_stop": "TIME STOP (flat at 11:30 ET)",
     "no_fill": "NO FILL -- IB broke, price never returned to the reload zone",
+    # A title is a headline, not a definition. The long form of each of these
+    # sits in the note block on the same chart, which has room to wrap.
     # "never broken" would be loose. P0 triggers on breakout_trigger=close_through,
     # so a bar may TRADE through the IB and still leave the session a no-breakout.
     # 2026-02-25 is exactly that case: 2 bars printed a high above IB_high + 1 tick,
     # none closed above it. The label has to say which of the two it means.
-    "no_breakout": "NO BREAKOUT -- no bar CLOSED beyond the IB before 11:30 ET (a high/low may still have traded through)",
+    "no_breakout": "NO BREAKOUT -- no bar CLOSED beyond the IB",
     "ambiguous_breakout": "AMBIGUOUS BREAKOUT -- both IB sides taken in one bar",
     "zero_risk": "DEGENERATE ZONE -- risk_to_hard_stop <= 0, no trade definable",
 }
@@ -141,6 +143,42 @@ def geometry_check(s, r) -> list:
         "(positive = that VA edge lies OUTSIDE the IB).".format(
             r["vah"] - s.ib_high, s.ib_low - r["val"]),
     ]
+
+
+def contract_block(date, cmap: dict) -> list:
+    """Which contract THIS session's bars are, printed on the chart.
+
+    NOT an aggregate. A month that spans a quarterly roll is drawn from two
+    different futures, and NQH6 and NQM6 do not trade at the same absolute
+    price -- the spread between them is real, not a rounding artefact. A POC of
+    25,327 on one contract is not the same location as 25,327 on the other.
+    Without this line a reader scanning a month of charts cannot tell where the
+    price series handed over, and would read a roll gap as a market move.
+
+    front_month_bars() takes ONE contract per session and never splices inside a
+    session (ivb/rolls.py, Series A), so every level on a single chart comes from
+    a single contract. The handover happens BETWEEN charts, never inside one.
+    """
+    row = cmap.get(pd.Timestamp(date))
+    if row is None:
+        return ["CONTRACT: not in the roll calendar -- this session should not "
+                "have been drawn.", ""]
+    sym, iid, eff, prev = row["sym"], row["iid"], row["eff"], row["prev"]
+    out = ["CONTRACT (this session only):"]
+    iid_s = "" if iid is None else "   instrument_id {}".format(iid)
+    out.append("  front month {}{}   -- bars matched on instrument_id, one "
+               "contract for the whole session, never spliced.".format(sym, iid_s))
+    if eff:
+        out += [
+            "  *** QUARTERLY ROLL EFFECTIVE TODAY: {} -> {}. ***".format(prev, sym),
+            "  The previous session's chart is {} and this one is {}. The two "
+            "contracts trade at DIFFERENT absolute".format(prev, sym),
+            "  prices, so a level carried across this boundary by eye is wrong.",
+            "  P0 applies NO roll-day filter -- this session is traded like any "
+            "other. Whether it should be is an",
+            "  open question, not a settled one.",
+        ]
+    return out + [""]
 
 
 def caveats(src_name: str) -> list:
@@ -257,6 +295,24 @@ def main() -> int:
     if roll_path != ROLL_FILE:
         print("     *** NOT the default data/roll_calendar.csv. Every level drawn")
         print("     *** below is conditional on THIS calendar.")
+    # Per-session contract, straight off the calendar. front_month_bars() drops
+    # front_symbol after matching on instrument_id, so the calendar is the only
+    # place the symbol still exists.
+    _c = cal.sort_values("session_date").reset_index(drop=True)
+    _prev = _c["front_symbol"].shift(1)
+    _has_eff = "roll_effective" in _c.columns
+    cmap = {}
+    for i, rw in _c.iterrows():
+        eff = bool(rw["roll_effective"]) if _has_eff else (
+            i > 0 and rw["front_symbol"] != _prev.iloc[i])
+        cmap[pd.Timestamp(rw["session_date"])] = {
+            "sym": str(rw["front_symbol"]),
+            "iid": (int(rw["front_instrument_id"])
+                    if "front_instrument_id" in _c.columns else None),
+            "eff": eff,
+            "prev": (str(_prev.iloc[i]) if i > 0 else "-"),
+        }
+
     cd = cal["session_date"]
     if int(((cd >= m_start) & (cd <= m_end)).sum()) == 0:
         print("[06] this calendar has NO row inside {} .. {}. It cannot select a "
@@ -309,11 +365,15 @@ def main() -> int:
         head = ("ILLUSTRATIVE, NOT A RESULT -- UNSEALED HOLDOUT DATA   |   "
                 "CHART 1(a) LAYER 1")
         label = OUTCOME_LABEL.get(scen, scen.upper())
+        cinfo = cmap.get(pd.Timestamp(date), {})
+        csym = cinfo.get("sym", "?")
         if filt:
             title = ("{}   |   {}   DROPPED BY FILTER: {}   (NOT TRADED BY P0)"
                      .format(head, ds, filt))
         else:
             title = "{}   |   {}   {}".format(head, ds, label)
+        if cinfo.get("eff"):
+            title += "   ||   ROLL {}->{}".format(cinfo.get("prev"), csym)
 
         notes = []
         if filt:
@@ -338,7 +398,8 @@ def main() -> int:
             notes += no_trade_block(why) + [""]
         elif scen == "zero_risk":
             r["no_fill_reason"] = "degenerate zone: risk_to_hard_stop <= 0"
-        notes += geometry_check(s, r) + [""] + base_caveats
+        notes += (contract_block(date, cmap) + geometry_check(s, r)
+                  + [""] + base_caveats)
 
         win = s.bars.iloc[:s.trade_end_idx + 1]
         levels = {"ib_high": s.ib_high, "ib_low": s.ib_low, "vah": r["vah"],
@@ -350,34 +411,41 @@ def main() -> int:
         # block, so on a filtered session the banner would otherwise sit under a
         # stats block quoting an R multiple -- which is the one place a
         # never-taken number gets read as a taken one.
-        sub = "{}   IB{}m, E1 limit at the near VA edge, close_plus_hard exit, " \
-              "R=2.0   |   {}".format(ds, cfg.ib_minutes, src_note)
+        roll_tag = ("  *** ROLL DAY: {} -> {} ***".format(cinfo.get("prev"), csym)
+                    if cinfo.get("eff") else "")
+        sub = "{}   contract {}{}   IB{}m, E1 limit at the near VA edge, " \
+              "close_plus_hard exit, R=2.0   |   {}".format(
+                  ds, csym, roll_tag, cfg.ib_minutes, src_note)
         if filt:
             sub = "NOT TRADED BY P0 -- dropped by the {} filter. The numbers " \
                   "below describe a trade P0 NEVER TAKES.   ||   {}".format(
                       filt, sub)
         fig = viz.chart_session(
             win, levels, r if direction != 0 else None, r["profile"], title=title,
-            subtitle=sub, extra_notes=notes)
+            subtitle=sub, extra_notes=notes, fit_title=True)
         written.append(viz.save(fig, outdir / fname))
 
         dir_s = "LONG" if direction == 1 else ("SHORT" if direction == -1 else "-")
+        csent = ("**{}** (ROLL: {} -> {})".format(csym, cinfo.get("prev"), csym)
+                 if cinfo.get("eff") else csym)
         if filt:
-            row = [ds, "filtered:" + filt, dir_s, "n/a (filtered)",
+            row = [ds, csent, "filtered:" + filt, dir_s, "n/a (filtered)",
                    "n/a (filtered)", "n/a (filtered)"]
         elif filled:
-            row = [ds, scen, dir_s, r["exit_reason"],
+            row = [ds, csent, scen, dir_s, r["exit_reason"],
                    "{:+.2f}R".format(r["r_multiple"]),
                    "{:+,.2f} pt".format(r["net_points"])]
         else:
-            row = [ds, scen, dir_s, "-", "-", "-"]
+            row = [ds, csent, scen, dir_s, "-", "-", "-"]
         index_rows.append(row)
-        print("     {}  {:<26s} {:<6s} {}".format(ds, token, dir_s, fname))
+        print("     {}  {:<5s}{:<6s} {:<26s} {:<6s} {}".format(
+            ds, csym, " ROLL" if cinfo.get("eff") else "", token, dir_s, fname))
 
     # ---- index.md ----------------------------------------------------------
     # Per-session rows only. Nothing in this file is summed, averaged or counted
     # by outcome. There is deliberately no totals row.
-    hdr = ["date", "outcome", "direction", "exit reason", "R achieved", "net"]
+    hdr = ["date", "contract", "outcome", "direction", "exit reason",
+           "R achieved", "net"]
     lines = [
         "# {} -- LAYER 1 session census".format(args.month),
         "",
@@ -401,6 +469,12 @@ def main() -> int:
         "",
         "Filtered sessions are drawn but carry no exit reason, R or net: P0 never "
         "takes those trades.",
+        "",
+        "The `contract` column is the front month those bars come from. One "
+        "contract per session, never spliced inside a session. Where a quarterly "
+        "roll falls inside the month, the handover row is marked **ROLL**: the "
+        "two contracts trade at DIFFERENT absolute prices, so a level must not be "
+        "carried across that row by eye. P0 applies no roll-day filter.",
         "",
         "| " + " | ".join(hdr) + " |",
         "|" + "|".join(["---"] * len(hdr)) + "|",

@@ -48,19 +48,67 @@ INVERSE MODEL
   A session classifier (directional vs consolidation) governs which model is live.
 
 MY SETUP (fill in / keep current)
+
+*** THE INSTRUMENT I RESEARCHED IS NOT THE INSTRUMENT I CAN TRADE. ***
+This block previously named AMP / Optimus as the route to NQ. That is wrong and
+is corrected below. I hold no futures account. Every result in this repo is
+computed on CME NQ, and neither account I actually have can trade CME NQ.
+This is a standing, unresolved mismatch. It is recorded here, not fixed here.
+See docs/IVB-SPEC.md sec (j) PROP FIRM CONSTRAINTS and
+docs/PROVENANCE-CHECKS.md sections E and F.
+
+RESEARCH INSTRUMENT (what every number in this repo is about)
 - Instrument:      NQ / MNQ (E-mini + Micro Nasdaq-100). Tick 0.25 pt = $5 / $0.50
 - Session:         09:30-11:30 ET (morning only). Full RTH tested later as a split.
 - IB window:       30 min PRE-REGISTERED PRIMARY. 15 and 60 are robustness checks,
                    not a sweep to optimise over.
-- Data available:  1-minute OHLCV NQ. Date range: [TO FILL]. Source: [TO FILL].
-                   NO tick data yet. Broker [TO FILL] can supply live tick with
-                   aggressor side on subscription.
+- Data available:  1-minute OHLCV NQ, 2010-07-01 -> 2026-08-31.
+                   Source: Databento, dataset GLBX.MDP3, schema ohlcv-1m.
+                   NO tick data yet. Tick / MBO is purchasable from the same
+                   vendor; it has not been bought.
                    Plan: Layers 0/1/3 on bars first; buy tick data only after the
                    baseline passes.
-- Platform:        Python + pandas (CSV / Databento). Research only, no charting
+- Platform:        Python + pandas (Databento). Research only, no charting
                    platform in the loop.
-- Account size:    [TO FILL - needed for sizing only, not for research]
-- Risk per trade:  [TO FILL - research runs at fixed 1 contract]
+
+ACCOUNTS I ACTUALLY HOLD (what I could place an order in today)
+- TradeZero:       US equities and options ONLY. NO futures of any kind -- not
+                   NQ, not MNQ, not any CME/CBOT/NYMEX/COMEX product. No account
+                   type reaches Globex. The nearest proxy is QQQ, which is a
+                   DIFFERENT instrument: ETF creation/redemption flow, RTH-only
+                   liquidity, $0.01 tick on a share price, and a FRAGMENTED tape
+                   -- the same single-venue-share problem that killed NVDA here.
+                   PDT (3 day trades / 5 business days under $25k) may apply and
+                   would cap a one-trade-per-session strategy outright; which
+                   TradeZero entity holds the account decides that, and it is
+                   unanswered.
+- FTMO (MT5):      Proprietary trading firm, NOT a broker and NOT a CME member.
+                   Quotes CONTRACTS FOR DIFFERENCE. Their Nasdaq symbol is a CFD
+                   referencing the index or the future; it is not the future. A
+                   CFD has no exchange tape, so the expected real_volume is ZERO.
+                   IF real_volume IS ZERO, LAYER 1 IS IMPOSSIBLE THERE. Do not
+                   substitute tick volume -- tick volume is method M4, the
+                   CONTROL, and calling it the primary is self-deception.
+                   Probe not yet run: docs/PROVENANCE-CHECKS.md sec E.
+                   FTMO also imposes a DAILY LOSS LIMIT and a MAX DRAWDOWN. These
+                   are HARD CONSTRAINTS on any live design, not preferences.
+                   See docs/IVB-SPEC.md sec (j).
+
+- Account size:    [TO FILL - FTMO challenge/funded size. Needed for sec (j)
+                   arithmetic and for sizing. NOT needed for research.]
+- Risk per trade:  [TO FILL - research runs at fixed 1 contract. Note that P0's
+                   risk is NOT constant: the stop is the far side of the IB, so
+                   dollar risk equals the IB range and varies session to session.
+                   A fixed contract count gives a VARIABLE dollar risk against a
+                   FIXED prop-firm limit. See sec (j.3).]
+
+WHAT THIS MISMATCH DOES AND DOES NOT MEAN
+- It does NOT invalidate the research. NQ is the right instrument to study.
+- It DOES mean no result here is directly executable by me today.
+- Closing it requires one of: (i) open a futures account with an FCM, (ii) accept
+  a proxy and RE-PRE-REGISTER the whole spec for that instrument, or (iii) accept
+  Layer 0 only on a CFD and abandon Layers 1 and 2.
+- None of the three is chosen. Do not assume one.
 
 CURRENT DOCS
 - docs/IVB-SPEC.md       strategy specification v0.1 (rules, parameters, defaults)
