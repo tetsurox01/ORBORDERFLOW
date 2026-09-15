@@ -355,6 +355,67 @@ Two things follow that were not true before 2026-09-15:
 **Not a reason to spend the rest.** A partial unseal does not make the remainder
 cheaper. The 412 sessions are worth less per session than they were, not more.
 
+---
+
+#### VIEWING RECORD under UNSEAL #1 — appended 2026-09-15
+
+**This is not a new unseal.** UNSEAL #1 opened the whole of
+**2026-01-01 → 2026-08-31** in one written decision. Every month inside that
+range is already in-sample from 2026-09-15 whether or not anyone has looked at
+it. Nothing below widens the unseal, and nothing below may be read as permission
+to widen it.
+
+What this entry adds is the thing UNSEAL #1 does not record: **which months have
+actually been drawn and seen.** "In-sample by decision" and "looked at" are not
+the same fact, and only the second one can be checked against the files on disk.
+
+| Month | Sessions drawn | Viewed on | Output | Vendor-degraded sessions |
+|---|---|---|---|---|
+| **2026-01** | 21 (census, nothing skipped) | 2026-09-15, **twice** | `output/charts/2026-01/` | none |
+| **2026-02** | 20 (census, nothing skipped) | **2026-09-15** | `output/charts/2026-02/` | none |
+
+**2026-01 was drawn twice, and the first draw is VOID.** The first set was drawn
+under the ORIGINAL §b.2 bin-width rule and the zero-anchored grid. Both were
+replaced the same day (§b.2 AMENDMENT 1 and AMENDMENT 2), which made every level
+on those 21 charts wrong. The month was redrawn on the fixed grid. The superseded
+PNGs are archived byte-untouched in `output/charts/2026-01/PRE_RULE_A/`, and
+`output/charts/2026-01/VOID.md` maps each superseded chart to the chart that
+replaced it. **Voiding a chart does not re-seal the session it drew.** Those bars
+have been seen; the redraw changes what was drawn, not what was looked at.
+
+**Vendor-degraded sessions in these two months: none.** `data/raw/degraded_days.csv`
+lists no session date in 2026-01 or 2026-02, and a live re-check of
+`metadata.get_dataset_condition` for `GLBX.MDP3` over 2026-02-01 → 2026-02-28 on
+2026-09-15 returned 28 days, all `available`. The re-check was a free metadata
+call; no data was purchased. The nearest degraded dates either side —
+`2026-01-31`, `2026-03-15`, `2026-03-21`, `2026-05-24`, `2026-08-29` — are all
+marked `NOT_A_SESSION`, and the nearest degraded RTH session inside the unsealed
+range is `2026-03-16`, which is in neither month.
+
+> **Correction to a statement in UNSEAL #1, recorded here rather than edited into
+> it, because this log is append-only.** UNSEAL #1 says `scripts/05_unseal_charts.py`
+> "is the only code permitted to read this range". That has not been true since
+> `scripts/06_month_charts.py` was written: 06 reads the same range, validates
+> `--month` against the same window and refuses anything outside it, and its own
+> docstring correctly calls itself "the second file allowed to". Both files, and
+> only those two, read the unsealed range. The original sentence stands unedited
+> above; this note is the amendment.
+
+**Still NOT run on these bars, in either month:** no Step 1–5 evaluation, no
+`b9_sensitivity()`, no `run_strategy()`, no aggregate of any kind — no win rate,
+no expectancy, no fill rate, no counts by outcome, no monthly total, and no
+combined table across the two months. Each `index.md` sums nothing. The output is
+per-session pictures and the per-session numbers printed on them.
+
+**Remaining sealed range is UNCHANGED by this entry:**
+
+```
+FORWARD_HOLDOUT   2024-05-02 .. 2025-12-31     STILL SEALED   412 sessions
+                  2026-01-01 .. 2026-08-31     UNSEALED #1    165 sessions
+                                                              (2026-01, 2026-02 drawn)
+BACKWARD_HOLDOUT  2010-07-01 .. 2014-12-31     DEAD -- unfit, see sec 0.2.3
+```
+
 ### 0.2.4 VENDOR DATA QUALITY — degraded days are EXCLUDED, never repaired
 
 The 2010-07-01 → 2026-08-31 pull emitted a `BentoWarning` naming three degraded days

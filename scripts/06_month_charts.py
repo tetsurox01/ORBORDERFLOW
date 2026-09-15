@@ -82,7 +82,11 @@ OUTCOME_LABEL = {
     "close_invalidation": "CLOSE INVALIDATION",
     "time_stop": "TIME STOP (flat at 11:30 ET)",
     "no_fill": "NO FILL -- IB broke, price never returned to the reload zone",
-    "no_breakout": "NO BREAKOUT -- the IB was never broken before 11:30 ET",
+    # "never broken" would be loose. P0 triggers on breakout_trigger=close_through,
+    # so a bar may TRADE through the IB and still leave the session a no-breakout.
+    # 2026-02-25 is exactly that case: 2 bars printed a high above IB_high + 1 tick,
+    # none closed above it. The label has to say which of the two it means.
+    "no_breakout": "NO BREAKOUT -- no bar CLOSED beyond the IB before 11:30 ET (a high/low may still have traded through)",
     "ambiguous_breakout": "AMBIGUOUS BREAKOUT -- both IB sides taken in one bar",
     "zero_risk": "DEGENERATE ZONE -- risk_to_hard_stop <= 0, no trade definable",
 }
@@ -110,11 +114,21 @@ def filter_reason(s, atr: float, degraded: set, cfg) -> str:
 def geometry_check(s, r) -> list:
     """Per-session profile resolution, printed on the chart.
 
-    NOT an aggregate: these are this session's own numbers. They are here because
-    the open defect in ivb/profile.py is invisible unless the bin width is shown
-    next to the IB range -- VAH/VAL are returned as bin EDGES on a grid anchored
-    at absolute price zero, so a value-area boundary can sit almost a full bin
-    OUTSIDE the initial balance it was built from.
+    NOT an aggregate: these are this session's own numbers.
+
+    RE-RUN NOTE, 2026-09-15. These three lines were added to make a DEFECT
+    visible: under the original sec b.2 rule the grid was anchored at absolute
+    price zero and the bin width came from the median IB bar range, so the IB
+    carried ~5 bins and a value-area edge could sit almost a full bin OUTSIDE
+    the initial balance it was built from. BOTH are now fixed -- sec b.2
+    AMENDMENT 1 (bin = IB range / 20) and AMENDMENT 2 (grid anchored at
+    ib_low, VAH/VAL/POC clamped into the IB).
+
+    The lines are KEPT, not removed, for two reasons. They are the only visible
+    proof on the face of a chart that the fix actually holds on THIS session
+    (expect ~20 bins and both VA offsets <= 0.00), and they let a post-fix chart
+    be read against its superseded twin in PRE_RULE_A/. A check that only prints
+    when it fails is a check nobody can audit.
     """
     prof = r["profile"]
     bs = float(prof.bin_size)
@@ -314,7 +328,10 @@ def main() -> int:
                 "",
             ]
         if direction == 0:
-            why = ("the IB was never broken before 11:30 ET"
+            why = ("no bar CLOSED beyond the IB +/- {} tick buffer before 11:30 "
+                   "ET (P0 trigger = close_through). A bar may still have TRADED "
+                   "through the IB; that does not trigger P0.".format(
+                       cfg.breakout_buffer_ticks)
                    if scen == "no_breakout" else
                    "both IB sides were taken inside one bar; the sequence is "
                    "unknowable (sec a.3)")
@@ -391,6 +408,23 @@ def main() -> int:
     for row in index_rows:
         lines.append("| " + " | ".join(row) + " |")
     lines += ["", "Charts: `{}`".format(outdir.as_posix()), ""]
+
+    # If a superseded set was archived beside these charts, say so IN the index.
+    # index.md is regenerated on every run, so a hand-added pointer would be
+    # silently erased by the next redraw and the archive would become invisible.
+    if (outdir / "PRE_RULE_A").is_dir():
+        lines += [
+            "---",
+            "",
+            "**A superseded set of charts for this month is archived in "
+            "`PRE_RULE_A/`.** Those files were drawn under the ORIGINAL sec b.2 "
+            "bin-width rule and the zero-anchored grid, both replaced on "
+            "2026-09-15 (sec b.2 AMENDMENT 1 and AMENDMENT 2). They are VOID: "
+            "kept as the record of the defect, quotable as evidence about "
+            "nothing. `VOID.md` in this folder explains why and maps each "
+            "superseded chart to the chart that replaced it.",
+            "",
+        ]
     idx = outdir / "index.md"
     idx.write_text("\n".join(lines), encoding="utf-8")
 
